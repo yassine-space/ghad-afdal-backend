@@ -1,4 +1,5 @@
 from rest_framework import viewsets, status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -71,16 +72,43 @@ class LoginView(TokenObtainPairView):
 
 class MeView(APIView):
     """
-    GET /api/auth/me/
-    Returns the currently logged-in user's profile and activity accesses.
-    Frontend uses this to know what to show/hide.
+    GET   /api/auth/me/    → current user profile + linked person details
+    PATCH /api/auth/me/    → change own password only (username is admin-only)
     """
     def get(self, request):
         if not request.user.is_authenticated:
             return Response({'detail': 'Not authenticated.'}, status=status.HTTP_401_UNAUTHORIZED)
-        return Response(UserSerializer(request.user).data)
+        user = (
+            User.objects
+            .select_related('profile__person')
+            .prefetch_related('activity_accesses__activity__department')
+            .get(pk=request.user.pk)
+        )
+        data = UserSerializer(user).data
+        try:
+            person_obj = user.profile.person if user.profile else None
+        except Exception:
+            person_obj = None
+        if person_obj:
+            data['person_detail'] = PersonSerializer(person_obj).data
+        else:
+            data['person_detail'] = None
+        return Response(data)
 
-
+    def patch(self, request):
+        if not request.user.is_authenticated:
+            return Response({'detail': 'Not authenticated.'}, status=status.HTTP_401_UNAUTHORIZED)
+        from .serializers import MeUpdateSerializer
+        serializer = MeUpdateSerializer(
+            request.user,
+            data=request.data,
+            partial=True,
+            context={'request': request}
+        )
+        if serializer.is_valid():
+            serializer.save()
+            return Response({'detail': 'تم تغيير كلمة المرور بنجاح.'})
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 # ─────────────────────────────────────────────
 # ADMIN-MANAGED VIEWSETS
 # Reads are open to any authenticated user (sidebar/members page need them).
@@ -137,14 +165,12 @@ class MemberViewSet(viewsets.ModelViewSet):
 
 class PersonViewSet(viewsets.ModelViewSet):
     """
-    GET    /api/persons/        → any logged-in user
-    POST   /api/persons/        → admin only
-    PUT    /api/persons/{id}/   → admin only
-    DELETE /api/persons/{id}/   → admin only
+    GET/POST/PUT/DELETE /api/persons/ → any authenticated user
+    (Regular users need full CRUD on persons via PeoplePage)
     """
     queryset           = Person.objects.all()
     serializer_class   = PersonSerializer
-    permission_classes = [IsAuthenticatedAnyActivity]
+    permission_classes = [IsAuthenticated]
 
 
 # ─────────────────────────────────────────────

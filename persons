@@ -1,0 +1,87 @@
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+\q
+xit
+exit
+\q
+CREATE TABLE IF NOT EXISTS "users" (
+    "id" serial NOT NULL PRIMARY KEY,
+    "password" varchar(128) NOT NULL,
+    "last_login" timestamptz NULL,
+    "is_superuser" boolean NOT NULL,
+    "username" varchar(150) NOT NULL UNIQUE,
+    "first_name" varchar(150) NOT NULL,
+    "last_name" varchar(150) NOT NULL,
+    "email" varchar(254) NOT NULL,
+    "is_staff" boolean NOT NULL,
+    "is_active" boolean NOT NULL,
+    "date_joined" timestamptz NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS "user_profiles" (
+    "id" serial NOT NULL PRIMARY KEY,
+    "user_id" integer NOT NULL UNIQUE REFERENCES "users"("id") DEFERRABLE INITIALLY DEFERRED,
+    "person_id" integer NULL UNIQUE REFERENCES "persons"("id") DEFERRABLE INITIALLY DEFERRED
+);
+
+CREATE TABLE IF NOT EXISTS "user_activity_access" (
+    "id" serial NOT NULL PRIMARY KEY,
+    "access_level" varchar(10) NOT NULL,
+    "granted_at" timestamptz NOT NULL,
+    "user_id" integer NOT NULL REFERENCES "users"("id") DEFERRABLE INITIALLY DEFERRED,
+    "activity_id" integer NOT NULL REFERENCES "ghadapi_activity"("id") DEFERRABLE INITIALLY DEFERRED,
+    UNIQUE ("user_id", "activity_id")
+);
+\q
+\dt
+BEGIN;
+
+DELETE FROM ghadapi_distributionitem;
+DELETE FROM ghadapi_donationitem;
+DELETE FROM ghadapi_drugdistribution;
+DELETE FROM ghadapi_drugdonation;
+DELETE FROM ghadapi_drugstock;
+DELETE FROM ghadapi_member;
+DELETE FROM persons;
+
+COMMIT;
+DELETE FROM user_profiles;
+
+DELETE FROM persons;
+TRUNCATE TABLE
+    user_profiles,
+    ghadapi_distributionitem,
+    ghadapi_donationitem,
+    ghadapi_drugdistribution,
+    ghadapi_drugdonation,
+    ghadapi_drugstock,
+    ghadapi_member,
+    persons
+RESTART IDENTITY CASCADE;
+SELECT COUNT(*) FROM persons;
+SELECT COUNT(*) FROM user_profiles;
+SELECT COUNT(*) FROM ghadapi_drugdistribution;
+SELECT COUNT(*) FROM ghadapi_drugstock;
+\q
+\q
+\l
+psql -U postgres -d ghadafdal
+exit
+\q
+\q
+clear
+\q
+\dt
+sudo -u postgres psql
+\q
+\lt
+\q
+\dt
+\w
+\q
+\dt
+\q
+\l
+SELECT ghadafdal
+\dt
+\s persons

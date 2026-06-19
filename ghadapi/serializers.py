@@ -284,6 +284,31 @@ class DrugDistributionSerializer(serializers.ModelSerializer):
 
         return instance
 
+
+class MeUpdateSerializer(serializers.ModelSerializer):
+    """
+    Allows a regular user to update ONLY their own password.
+    Username is explicitly read-only — only admin can change it.
+    """
+    password     = serializers.CharField(write_only=True, required=True, min_length=6)
+    old_password = serializers.CharField(write_only=True, required=True)
+
+    class Meta:
+        model  = User
+        fields = ['old_password', 'password']
+
+    def validate_old_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError('كلمة المرور الحالية غير صحيحة.')
+        return value
+
+    def update(self, instance, validated_data):
+        validated_data.pop('old_password')
+        instance.set_password(validated_data['password'])
+        instance.save()
+        return instance
+    
 # ─────────────────────────────────────────────
 # USER MANAGEMENT SERIALIZERS (admin only)
 # ─────────────────────────────────────────────
