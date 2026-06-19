@@ -52,7 +52,7 @@ CORS_ALLOW_ALL_ORIGINS = False  # For development only
 # Allow credentials (cookies, authorization headers)
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
-    'https://ghad-afdal-frontend.vercel.app',
+    'https://ghad-afdal.vercel.app',
 ]
 # Allow all methods
 CORS_ALLOW_METHODS = [
