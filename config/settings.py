@@ -2,7 +2,6 @@
 Django settings for config project.
 """
 
-import os
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
@@ -11,15 +10,17 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Quick-start development settings - unsuitable for production
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-u1xwq@jsz*53zk826p6-+54-8%w_(8g22vgoa9$sx%l&8&^db8')
-DEBUG = True
-
+DEBUG = os.getenv("DEBUG", "False") == "True"
 CSRF_TRUSTED_ORIGINS = [
     'https://ghad-afdal-frontend.vercel.app',
     'https://ghad-afdal-api.onrender.com',
 ]
 
-ALLOWED_HOSTS = ['ghad-afdal-api.onrender.com', 'localhost', '127.0.0.1'] 
-
+ALLOWED_HOSTS = [
+    "ghad-afdal-api.onrender.com",
+    "localhost",
+    "127.0.0.1",
+]
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -52,8 +53,9 @@ CORS_ALLOW_ALL_ORIGINS = False  # For development only
 # Allow credentials (cookies, authorization headers)
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
-    'https://ghad-afdal.vercel.app',
-    'http://localhost:5173',
+    "https://ghad-afdal.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 ]
 # Allow all methods
 CORS_ALLOW_METHODS = [
@@ -102,30 +104,33 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 import os
 
-IS_PRODUCTION = os.getenv("RAILWAY_ENVIRONMENT") is not None
+STATIC_URL = "static/"
+STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 
-if IS_PRODUCTION:
+
+import os
+import dj_database_url
+
+if os.getenv("DATABASE_URL"):
     DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": os.getenv("PGDATABASE"),
-            "USER": os.getenv("PGUSER"),
-            "PASSWORD": os.getenv("PGPASSWORD"),
-            "HOST": os.getenv("PGHOST"),
-            "PORT": os.getenv("PGPORT"),
-        }
+        "default": dj_database_url.config(
+            default=os.getenv("DATABASE_URL")
+        )
     }
 else:
+    # 🖥️ Local development
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",
-            "NAME": "ghadafdal",
-            "USER": "yassine",
-            "PASSWORD": "yassine1234",
-            "HOST": "localhost",
-            "PORT": "5432",
+            "NAME": os.getenv("DB_NAME"),
+            "USER": os.getenv("DB_USER"),
+            "PASSWORD": os.getenv("DB_PASSWORD"),
+            "HOST": os.getenv("DB_HOST"),
+            "PORT": os.getenv("DB_PORT"),
         }
     }
+
+
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -150,8 +155,6 @@ USE_I18N = True
 USE_TZ = True
 
 # Static files
-STATIC_URL = 'static/'
-
 AUTH_USER_MODEL = 'ghadapi.User'
 
 REST_FRAMEWORK = {
