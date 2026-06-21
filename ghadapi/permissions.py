@@ -35,52 +35,7 @@ METHOD_LEVEL_MAP = {
     'DELETE': 'manager',
 }
 
-
 class HasActivityAccess(BasePermission):
-    """
-    Checks that the logged-in user has access to the activity
-    defined on the ViewSet via:
-        required_activity   = 'Pharmacy'
-        required_department = 'Medical'
-
-    Access level is derived from the HTTP method:
-        GET/HEAD/OPTIONS → viewer
-        POST/PUT/PATCH   → editor
-        DELETE           → manager
-
-    Superusers always pass.
-    Unauthenticated users always fail.
-    """
-    message = "You do not have permission to perform this action on this activity."
-
-    def has_permission(self, request, view):
-        # Must be authenticated
-        if not request.user or not request.user.is_authenticated:
-            return False
-
-        # Superuser bypasses everything
-        if request.user.is_superuser:
-            return True
-
-        # Get activity + department from the view class
-        activity_name   = getattr(view, 'required_activity',   None)
-        department_name = getattr(view, 'required_department',  None)
-
-        if not activity_name or not department_name:
-            # If the view forgot to declare these, deny by default
-            return False
-
-        required_level = METHOD_LEVEL_MAP.get(request.method, 'manager')
-
-        return has_activity_access(
-            request.user,
-            activity_name,
-            department_name,
-            required_level
-        )
-
-
-class HasActivityAccessByKeyword(BasePermission):
     """
     Same idea as HasActivityAccess, but instead of requiring an EXACT
     name match for the activity, it matches by KEYWORD (case-insensitive,
@@ -91,7 +46,7 @@ class HasActivityAccessByKeyword(BasePermission):
     name contains one of the configured keywords (e.g. 'صيدل', 'pharma').
 
     Usage on a ViewSet:
-        permission_classes = [HasActivityAccessByKeyword]
+        permission_classes = [HasActivityAccess]
         activity_keywords  = ['pharma', 'صيدل', 'drug', 'دواء', 'medicine']
 
     Superusers always pass.

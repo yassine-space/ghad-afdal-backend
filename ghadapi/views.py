@@ -38,7 +38,6 @@ from .serializers import (
 
 from .permissions import (
     HasActivityAccess,
-    HasActivityAccessByKeyword,
     IsAdminOnly,
     IsAuthenticatedAnyActivity,
 )
@@ -62,11 +61,6 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 
 class LoginView(TokenObtainPairView):
-    """
-    POST /api/auth/login/
-    Body: { "username": "...", "password": "..." }
-    Returns: { "access": "...", "refresh": "...", "user": { ...profile + activities... } }
-    """
     serializer_class = CustomTokenObtainPairSerializer
 
 
@@ -196,7 +190,7 @@ class DrugViewSet(viewsets.ModelViewSet):
     """
     queryset            = Drug.objects.all()
     serializer_class    = DrugSerializer
-    permission_classes  = [HasActivityAccessByKeyword]
+    permission_classes  = [HasActivityAccess]
     activity_keywords   = ['pharma', 'صيدل', 'drug', 'دواء', 'medicine']
 
     @action(detail=False, methods=['get'], url_path='expiring_soon')
@@ -258,7 +252,7 @@ class DrugStockViewSet(viewsets.ReadOnlyModelViewSet):
     Requires viewer access on a pharmacy-keyword activity.
     """
     serializer_class    = DrugStockSerializer
-    permission_classes  = [HasActivityAccessByKeyword]
+    permission_classes  = [HasActivityAccess]
     activity_keywords   = ['pharma', 'صيدل', 'drug', 'دواء', 'medicine']
 
     def get_queryset(self):
@@ -277,7 +271,7 @@ class DrugDonationViewSet(viewsets.ModelViewSet):
     """
     queryset            = DrugDonation.objects.prefetch_related('items__drug').all()
     serializer_class    = DrugDonationSerializer
-    permission_classes  = [HasActivityAccessByKeyword]
+    permission_classes  = [HasActivityAccess]
     activity_keywords   = ['pharma', 'صيدل', 'drug', 'دواء', 'medicine']
 
     @action(detail=True, methods=['post'], url_path='cancel')
@@ -316,7 +310,7 @@ class DrugDistributionViewSet(viewsets.ModelViewSet):
         'items__stock__drug'
     ).select_related('beneficiary').all()
     serializer_class    = DrugDistributionSerializer
-    permission_classes  = [HasActivityAccessByKeyword]
+    permission_classes  = [HasActivityAccess]
     activity_keywords   = ['pharma', 'صيدل', 'drug', 'دواء', 'medicine']
 
     @action(detail=True, methods=['post'], url_path='validate')
