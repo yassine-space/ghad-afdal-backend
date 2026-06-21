@@ -75,6 +75,10 @@ class PersonSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+# ─────────────────────────────────────────────
+# DEPARTMENT & ACTIVITY
+# ─────────────────────────────────────────────
+
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Department
@@ -136,13 +140,11 @@ class DonationItemSerializer(serializers.ModelSerializer):
 
 class DrugDonationSerializer(serializers.ModelSerializer):
     items = DonationItemSerializer(many=True)
-    cancelled_by_username = serializers.CharField(source='cancelled_by.username', read_only=True)
+
     class Meta:
         model  = DrugDonation
         fields = "__all__"
-        read_only_fields = ['is_cancelled', 'cancelled_at', 'cancelled_by']
-    # in normall case we would use nested writable serializers for create/update, but since we have some custom logic to handle stock validation and immutability of items after creation, we override create() and update() methods instead.   
-    # The create() method creates the donation and its items in a single transaction, ensuring data integrity.
+
     def create(self, validated_data):
         items_data = validated_data.pop('items')
         with transaction.atomic():
@@ -150,15 +152,19 @@ class DrugDonationSerializer(serializers.ModelSerializer):
             for item_data in items_data:
                 DonationItem.objects.create(donation=donation, **item_data)
         return donation
-    
-    #  The update() method allows changing only the header fields of the donation, while preventing any modifications to the items after creation, thus maintaining an audit trail. 
+
     def update(self, instance, validated_data):
-        if instance.is_cancelled:
-            raise serializers.ValidationError("A cancelled donation cannot be modified.")
+        """
+        Update header fields only (donor, type, date, price, remarks).
+        Items are intentionally immutable after creation — they form an
+        audit trail and each one triggers a stock signal.
+        To change items, delete the donation and create a new one.
+        """
         items_data = validated_data.pop('items', None)
         if items_data is not None:
             raise serializers.ValidationError(
-                {"items": "Donation items cannot be modified after creation."}
+                {"items": "Donation items cannot be modified after creation. "
+                          "Delete this donation and create a new one."}
             )
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -175,61 +181,9 @@ class DistributionItemSerializer(serializers.ModelSerializer):
     drug_name       = serializers.CharField(source='stock.drug.dci_name',  read_only=True)
     expiration_date = serializers.DateField(source='stock.expiration_date', read_only=True)
 
-    # ── Write-only convenience field ──────────────────────────────────────
-    # The frontend sends { drug: <id>, quantity: N }.
-    # We resolve it to the earliest non-expired DrugStock automatically.
-    # If you already know the exact stock batch, send { stock: <id>, quantity: N } instead.
-    drug = serializers.PrimaryKeyRelatedField(
-        queryset=Drug.objects.all(),
-        write_only=True,
-        required=False,
-        help_text="Send drug id and we'll pick the earliest valid stock batch automatically."
-    )
-
     class Meta:
         model  = DistributionItem
-        fields = ['id', 'stock', 'drug', 'drug_name', 'expiration_date', 'quantity']
-        extra_kwargs = {
-            # stock is optional on input — can be resolved from drug
-            'stock': {'required': False},
-        }
-
-    def validate(self, data):
-        drug  = data.pop('drug', None)
-        stock = data.get('stock', None)
-
-        if stock is None and drug is None:
-            raise serializers.ValidationError(
-                "Provide either 'stock' (exact batch id) or 'drug' (we pick the earliest batch)."
-            )
-
-        if stock is None:
-            # Auto-pick the earliest non-expired batch with enough stock
-            from django.utils import timezone
-            today = timezone.now().date()
-            quantity = data.get('quantity', 0)
-            stock = (
-                DrugStock.objects
-                .filter(
-                    drug=drug,
-                    quantity_available__gte=quantity,
-                    expiration_date__gt=today,
-                )
-                .order_by('expiration_date')   # FEFO — First Expired, First Out
-                .first()
-            )
-            if stock is None:
-                raise serializers.ValidationError(
-                    {
-                        "drug": (
-                            f"No available stock for '{drug.dci_name} {drug.dosage}' "
-                            f"with at least {quantity} units that hasn't expired."
-                        )
-                    }
-                )
-            data['stock'] = stock
-
-        return data
+        fields = ['id', 'stock', 'drug_name', 'expiration_date', 'quantity']
 
 
 class DrugDistributionSerializer(serializers.ModelSerializer):
