@@ -1,7 +1,7 @@
 """
 Django settings for config project.
 """
-
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
@@ -102,7 +102,6 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # Database
 
-import os
 
 STATIC_URL = "static/"
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
