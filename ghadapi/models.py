@@ -281,13 +281,51 @@ class DrugDonation(models.Model):
     donation_date  = models.DateField()
     total_price    = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     remarks        = models.TextField(blank=True)
-
+    is_cancelled     = models.BooleanField(default=False)
+    cancelled_at     = models.DateTimeField(null=True, blank=True)
+    cancelled_by     = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,)
+    cancellation_reason = models.TextField(blank=True)
     class Meta:
         ordering = ['-donation_date']
 
     def __str__(self):
         return f"{self.get_donation_type_display()} from {self.donor} ({self.donation_date})"
+    def cancel(self, user, reason=''):
+        from django.db import transaction
+        from django.utils import timezone
 
+        if self.is_cancelled:
+            raise ValidationError("This donation has already been cancelled.")
+
+        with transaction.atomic():
+            for item in self.items.select_related('drug'):
+                try:
+                    stock = DrugStock.objects.get(
+                        drug=item.drug,
+                        expiration_date=item.expiration_date,
+                    )
+                except DrugStock.DoesNotExist:
+                    raise ValidationError(
+                        f"Stock batch for {item.drug} (exp {item.expiration_date}) no longer exists."
+                    )
+                if stock.quantity_available < item.quantity:
+                    raise ValidationError(
+                        f"Cannot cancel: only {stock.quantity_available} units remain of "
+                        f"{item.drug} (exp {item.expiration_date}), but {item.quantity} were "
+                        f"donated — some have already been distributed."
+                    )
+                stock.quantity_available -= item.quantity
+                stock.save()
+
+            self.is_cancelled = True
+            self.cancelled_at = timezone.now()
+            self.cancelled_by = user
+            self.cancellation_reason = reason
+            self.save()
 
 class DonationItem(models.Model):
     """

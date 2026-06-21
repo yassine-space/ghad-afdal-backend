@@ -53,6 +53,7 @@ CORS_ALLOW_ALL_ORIGINS = False  # For development only
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     'https://ghad-afdal.vercel.app',
+    'http://localhost:5173',
 ]
 # Allow all methods
 CORS_ALLOW_METHODS = [
@@ -99,24 +100,30 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # Database
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME'),
-        'USER': os.getenv('DB_USER'),
-        'PASSWORD': os.getenv('DB_PASSWORD'),
-        'HOST': os.getenv('DB_HOST'),
-        'PORT': os.getenv('DB_PORT'),
-        'OPTIONS': {'sslmode': 'require'},
-    }
-}
+import os
 
-import sys
-if 'test' in sys.argv:
+IS_PRODUCTION = os.getenv("RAILWAY_ENVIRONMENT") is not None
+
+if IS_PRODUCTION:
     DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'test_db.sqlite3',
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.getenv("PGDATABASE"),
+            "USER": os.getenv("PGUSER"),
+            "PASSWORD": os.getenv("PGPASSWORD"),
+            "HOST": os.getenv("PGHOST"),
+            "PORT": os.getenv("PGPORT"),
+        }
+    }
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": "ghadafdal",
+            "USER": "yassine",
+            "PASSWORD": "yassine1234",
+            "HOST": "localhost",
+            "PORT": "5432",
         }
     }
 

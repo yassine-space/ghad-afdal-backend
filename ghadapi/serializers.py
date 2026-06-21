@@ -75,10 +75,6 @@ class PersonSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-# ─────────────────────────────────────────────
-# DEPARTMENT & ACTIVITY
-# ─────────────────────────────────────────────
-
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Department
@@ -140,11 +136,13 @@ class DonationItemSerializer(serializers.ModelSerializer):
 
 class DrugDonationSerializer(serializers.ModelSerializer):
     items = DonationItemSerializer(many=True)
-
+    cancelled_by_username = serializers.CharField(source='cancelled_by.username', read_only=True)
     class Meta:
         model  = DrugDonation
         fields = "__all__"
-
+        read_only_fields = ['is_cancelled', 'cancelled_at', 'cancelled_by']
+    # in normall case we would use nested writable serializers for create/update, but since we have some custom logic to handle stock validation and immutability of items after creation, we override create() and update() methods instead.   
+    # The create() method creates the donation and its items in a single transaction, ensuring data integrity.
     def create(self, validated_data):
         items_data = validated_data.pop('items')
         with transaction.atomic():
@@ -152,19 +150,15 @@ class DrugDonationSerializer(serializers.ModelSerializer):
             for item_data in items_data:
                 DonationItem.objects.create(donation=donation, **item_data)
         return donation
-
+    
+    #  The update() method allows changing only the header fields of the donation, while preventing any modifications to the items after creation, thus maintaining an audit trail. 
     def update(self, instance, validated_data):
-        """
-        Update header fields only (donor, type, date, price, remarks).
-        Items are intentionally immutable after creation — they form an
-        audit trail and each one triggers a stock signal.
-        To change items, delete the donation and create a new one.
-        """
+        if instance.is_cancelled:
+            raise serializers.ValidationError("A cancelled donation cannot be modified.")
         items_data = validated_data.pop('items', None)
         if items_data is not None:
             raise serializers.ValidationError(
-                {"items": "Donation items cannot be modified after creation. "
-                          "Delete this donation and create a new one."}
+                {"items": "Donation items cannot be modified after creation."}
             )
         for attr, value in validated_data.items():
             setattr(instance, attr, value)

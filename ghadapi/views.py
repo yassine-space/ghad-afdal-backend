@@ -280,6 +280,30 @@ class DrugDonationViewSet(viewsets.ModelViewSet):
     permission_classes  = [HasActivityAccessByKeyword]
     activity_keywords   = ['pharma', 'صيدل', 'drug', 'دواء', 'medicine']
 
+    @action(detail=True, methods=['post'], url_path='cancel')
+    def cancel_donation(self, request, pk=None):
+        if not request.user.is_superuser:
+            from .models import get_user_activities
+            LEVEL_RANK = {'viewer': 1, 'editor': 2, 'manager': 3}
+            accesses = get_user_activities(request.user)
+            has_manager = any(
+                any(kw.lower() in (a.activity.name or '').lower() for kw in self.activity_keywords)
+                and LEVEL_RANK.get(a.access_level, 0) >= LEVEL_RANK['manager']
+                for a in accesses
+            )
+            if not has_manager:
+                return Response(
+                    {'detail': 'You need manager access to cancel a donation.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        donation = self.get_object()
+        reason = request.data.get('reason', '')
+        try:
+            donation.cancel(user=request.user, reason=reason)
+        except Exception as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(DrugDonationSerializer(donation).data)
 
 class DrugDistributionViewSet(viewsets.ModelViewSet):
     """
