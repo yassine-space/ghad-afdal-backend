@@ -4,7 +4,6 @@ from django.dispatch import receiver
 from django.core.exceptions import ValidationError
 from django.contrib.auth.models import AbstractUser
 from datetime import date
-
 class User(AbstractUser):
     """
     Custom User model replacing Django's default.
@@ -418,3 +417,61 @@ class DistributionItem(models.Model):
 
     def __str__(self):
         return f"{self.stock.drug} x{self.quantity}"
+    
+# _____________________________________________
+# blood donation management models
+#__________________________________________
+from datetime import date, timedelta
+
+class Donor(models.Model):
+    BLOOD_TYPES = [
+        ('A+', 'A+'), ('A-', 'A-'), ('B+', 'B+'), ('B-', 'B-'),
+        ('AB+', 'AB+'), ('AB-', 'AB-'), ('O+', 'O+'), ('O-', 'O-'),
+    ]
+    person             = models.OneToOneField(Person, on_delete=models.CASCADE, related_name='donor_profile')
+    blood_type         = models.CharField(max_length=3, choices=BLOOD_TYPES, blank=True, null=True)
+    date_last_donation = models.DateField(blank=True, null=True)
+    is_approved        = models.BooleanField(default=False)
+    description        = models.TextField(blank=True, null=True)
+
+    class Meta:
+        db_table = 'donor'
+
+    def __str__(self):
+        return f"{self.person.first_name} {self.person.last_name}"
+    @property
+    def can_donate(self):
+        """Check if the donor can donate (90 days between donations)."""
+        if not self.date_last_donation:
+            return True
+        three_months_ago = date.today() - timedelta(days=90)
+        return self.date_last_donation <= three_months_ago
+
+
+class Patient(models.Model):
+    BLOOD_TYPES = Donor.BLOOD_TYPES  # reuse instead of repeating the same tuple list
+
+    person        = models.OneToOneField(Person, on_delete=models.CASCADE, related_name='patient_profile')
+    blood_type    = models.CharField(max_length=3, choices=BLOOD_TYPES, blank=True, null=True)
+    hospital_name = models.CharField(max_length=255, blank=True, null=True)
+    description   = models.TextField(blank=True, null=True)
+    is_active     = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'patient'
+
+    def __str__(self):
+        return f"{self.person.first_name} {self.person.last_name}"
+
+
+class DonationHistory(models.Model):
+    patient       = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='donations_received')
+    donor         = models.ForeignKey(Donor, on_delete=models.CASCADE, related_name='donations_given')
+    donation_date = models.DateField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'donation_history'
+        ordering = ['-donation_date']
+
+    def __str__(self):
+        return f"{self.donor.person.first_name} تبرع لـ {self.patient.person.first_name} في {self.donation_date}"

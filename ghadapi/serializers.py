@@ -2,6 +2,9 @@ from rest_framework import serializers
 from django.db import transaction
 
 from .models import (
+    DonationHistory,
+    Donor,
+    Patient,
     User,
     UserProfile,
     UserActivityAccess,
@@ -293,3 +296,54 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             instance.set_password(password)
         instance.save()
         return instance
+    
+
+
+
+# blood donation management 
+class DonorSerializer(serializers.ModelSerializer):
+    person_name = serializers.SerializerMethodField()
+    person_nin  = serializers.CharField(source='person.nin', read_only=True)
+    can_donate = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Donor
+        fields = ['id', 'person', 'person_name', 'person_nin', 'blood_type',
+                  'date_last_donation', 'is_approved', 'description', 'can_donate']
+
+    def get_person_name(self, obj):
+        return f"{obj.person.first_name} {obj.person.last_name}"
+
+    def get_can_donate(self, obj):
+        return obj.can_donate
+
+class PatientSerializer(serializers.ModelSerializer):
+    person_name = serializers.SerializerMethodField()
+    person_nin  = serializers.CharField(source='person.nin', read_only=True)
+
+    class Meta:
+        model  = Patient
+        fields = ['id', 'person', 'person_name', 'person_nin', 'blood_type',
+                  'hospital_name', 'description', 'is_active']
+
+    def get_person_name(self, obj):
+        return f"{obj.person.first_name} {obj.person.last_name}"
+
+
+
+class PatientWithCompatibleDonorsSerializer(serializers.Serializer):
+    patient = PatientSerializer()
+    donors  = DonorSerializer(many=True)
+
+
+class DonationHistorySerializer(serializers.ModelSerializer):
+    donor_name         = serializers.CharField(source='donor.person.first_name', read_only=True)
+    donor_last_name    = serializers.CharField(source='donor.person.last_name', read_only=True)
+    patient_name       = serializers.CharField(source='patient.person.first_name', read_only=True)
+    patient_last_name  = serializers.CharField(source='patient.person.last_name', read_only=True)
+    blood_type         = serializers.CharField(source='patient.blood_type', read_only=True)
+    hospital           = serializers.CharField(source='patient.hospital_name', read_only=True)
+
+    class Meta:
+        model  = DonationHistory
+        fields = '__all__'

@@ -1,3 +1,4 @@
+from django.http import HttpResponse
 from rest_framework import viewsets, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
@@ -6,11 +7,23 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.utils import timezone
-from datetime import timedelta
-
-from django.db.models import Sum
+from datetime import timedelta,date
+from django.conf import settings             # missing — needed by certificate PDF generation
+from django.db.models import Sum, Q          # was: from django.db.models import Sum
+from django.shortcuts import get_object_or_404
+from django.db import transaction
+import os
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import cm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.utils import ImageReader
 
 from .models import (
+    DonationHistory,
+    Donor,
+    Patient,
     Person,
     Department,
     Activity,
@@ -25,6 +38,9 @@ from .models import (
 )
 
 from .serializers import (
+    DonationHistorySerializer,
+    DonorSerializer,
+    PatientSerializer,
     UserSerializer,
     PersonSerializer,
     DepartmentSerializer,
@@ -501,3 +517,325 @@ class UserViewSet(viewsets.ModelViewSet):
         except UserActivityAccess.DoesNotExist:
             return Response({'detail': 'الصلاحية غير موجودة'}, status=status.HTTP_404_NOT_FOUND)
         return Response(UserSerializer(user).data)
+    
+
+# ─────────────────────────────────────────────
+# BLOOD DONATION ACTIVITY ("قطرة حياة")
+# ─────────────────────────────────────────────
+
+BLOOD_KEYWORDS = ['قطرة حياة', 'قطرة', 'دم', 'blood']
+
+
+class DonorViewSet(viewsets.ModelViewSet):
+    queryset            = Donor.objects.select_related('person').all()
+    serializer_class    = DonorSerializer
+    permission_classes  = [HasActivityAccess]
+    activity_keywords   = BLOOD_KEYWORDS
+
+
+class PatientViewSet(viewsets.ModelViewSet):
+    queryset            = Patient.objects.select_related('person').all()
+    serializer_class    = PatientSerializer
+    permission_classes  = [HasActivityAccess]
+    activity_keywords   = BLOOD_KEYWORDS
+
+
+class DonationHistoryViewSet(viewsets.ModelViewSet):
+    queryset = DonationHistory.objects.select_related('donor__person', 'patient__person').all()
+    serializer_class    = DonationHistorySerializer
+    permission_classes  = [HasActivityAccess]
+    activity_keywords   = BLOOD_KEYWORDS
+
+
+class DonateBloodView(APIView):
+    """
+    POST /api/donate/<id_patient>/<id_donor>/
+    Requires editor access on the blood-donation activity.
+    """
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = BLOOD_KEYWORDS
+
+    def post(self, request, id_patient, id_donor):
+        donor   = get_object_or_404(Donor.objects.select_related('person'), id=id_donor)
+        patient = get_object_or_404(Patient.objects.select_related('person'), id=id_patient)
+
+        # Your model already had can_donate()/is_approved — wiring them in here,
+        # since the old donate_blood() never actually called them.
+        if not donor.is_approved:
+            return Response({'error': 'هذا المتبرع غير معتمد بعد.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not donor.can_donate:
+            return Response(
+                {'error': 'يجب الانتظار 90 يوماً على الأقل منذ آخر تبرع لهذا المتبرع.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            donation = DonationHistory.objects.create(donor=donor, patient=patient)
+            donor.date_last_donation = date.today()
+            donor.save()
+
+        return Response(
+            {'message': 'تم تسجيل التبرع بنجاح.', 'donation': DonationHistorySerializer(donation).data},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class CompatibleDonorsView(APIView):
+    """GET /api/patients/with-compatible-donors/"""
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = BLOOD_KEYWORDS
+
+    def get(self, request):
+        three_months_ago = date.today() - timedelta(days=90)
+        result = []
+        for patient in Patient.objects.filter(is_active=True).select_related('person'):
+            donors = Donor.objects.filter(
+                blood_type=patient.blood_type, is_approved=True
+            ).filter(
+                Q(date_last_donation__isnull=True) | Q(date_last_donation__lte=three_months_ago)
+            ).select_related('person')
+            result.append({
+                'patient': PatientSerializer(patient).data,
+                'donors':  DonorSerializer(donors, many=True).data,
+            })
+        return Response(result)
+
+
+class BloodDonationDashboardView(APIView):
+    """
+    GET /api/dashboard/stats/
+    so I wrote it fresh — adjust the fields to whatever your dashboard actually needs.
+    """
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = BLOOD_KEYWORDS
+
+    def get(self, request):
+        three_months_ago = date.today() - timedelta(days=90)
+        eligible_now = Donor.objects.filter(is_approved=True).filter(
+            Q(date_last_donation__isnull=True) | Q(date_last_donation__lte=three_months_ago)
+        ).count()
+        return Response({
+            'donors_total':           Donor.objects.count(),
+            'donors_approved':        Donor.objects.filter(is_approved=True).count(),
+            'donors_eligible_now':    eligible_now,
+            'patients_total':         Patient.objects.count(),
+            'patients_active':        Patient.objects.filter(is_active=True).count(),
+            'donations_total':        DonationHistory.objects.count(),
+            'donations_last_30_days': DonationHistory.objects.filter(
+                donation_date__gte=date.today() - timedelta(days=30)
+            ).count(),
+        })
+
+
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+    ARABIC_SUPPORT = True
+except ImportError:
+    ARABIC_SUPPORT = False
+    print("Warning: arabic-reshaper or python-bidi not installed.")
+
+
+def reshape_arabic(text):
+    """تحويل النص العربي للعرض الصحيح في PDF"""
+    if not text:
+        return ""
+    if ARABIC_SUPPORT:
+        try:
+            reshaped_text = arabic_reshaper.reshape(str(text))
+            bidi_text = get_display(reshaped_text)
+            return bidi_text
+        except:
+            return str(text)
+    else:
+        return str(text)
+
+class CertificateView(APIView):
+    """
+    GET /api/certificate/<patient_id>/<donor_id>/
+    Requires: pip install reportlab arabic-reshaper python-bidi
+    Requires a logo file at <BASE_DIR>/static/images/logo.jpg (or .png).
+    """
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = BLOOD_KEYWORDS
+
+    def get(self, request, patient_id, donor_id):
+        """توليد شهادة تبرع بالدم بتصميم احترافي أبيض وأسود"""
+        patient = get_object_or_404(Patient, id=patient_id)
+        donor = get_object_or_404(Donor, id=donor_id)
+
+        response = HttpResponse(content_type='application/pdf')
+        filename = f'certificate_{patient_id}_{donor_id}.pdf'
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+        p = canvas.Canvas(response, pagesize=A4)
+        width, height = A4
+
+        arabic_font = 'Helvetica'
+        try:
+            possible_font_paths = [
+                os.path.join(settings.BASE_DIR, 'static', 'fonts', 'Amiri-Regular.ttf'),
+                os.path.join(settings.BASE_DIR, 'static', 'fonts', 'NotoSansArabic-Regular.ttf'),
+                os.path.join(settings.BASE_DIR, 'static', 'fonts', 'Arial.ttf'),
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                'C:\\Windows\\Fonts\\arial.ttf',
+            ]
+            for font_path in possible_font_paths:
+                if os.path.exists(font_path):
+                    pdfmetrics.registerFont(TTFont('ArabicFont', font_path))
+                    arabic_font = 'ArabicFont'
+                    break
+        except Exception as e:
+            print(f"Font error: {e}")
+
+        logo_path = os.path.join(settings.BASE_DIR, 'static', 'images', 'logo.jpg')
+        if not os.path.exists(logo_path):
+            logo_path = os.path.join(settings.BASE_DIR, 'static', 'images', 'logo.png')
+        if not os.path.exists(logo_path):
+            logo_path = os.path.join(settings.BASE_DIR, 'static', 'img', 'logo.jpg')
+        if not os.path.exists(logo_path):
+            logo_path = os.path.join(settings.BASE_DIR, 'static', 'img', 'logo.png')
+
+        if os.path.exists(logo_path):
+            try:
+                logo = ImageReader(logo_path)
+                logo_width = 3 * cm
+                logo_height = 3 * cm
+                p.drawImage(logo, width / 2 - logo_width / 2, height - 5.25 * cm,
+                            width=logo_width, height=logo_height, mask='auto')
+            except Exception as e:
+                print(f"Logo error: {e}")
+        else:
+            print(f"Logo not found at: {logo_path}")
+
+        p.setStrokeColorRGB(0, 0, 0)
+        p.setLineWidth(3)
+        p.rect(1.5 * cm, 1.5 * cm, width - 3 * cm, height - 3 * cm, stroke=1, fill=0)
+        p.setLineWidth(1)
+        p.rect(2 * cm, 2 * cm, width - 4 * cm, height - 4 * cm, stroke=1, fill=0)
+
+        corner_size = 1 * cm
+        p.line(width - 2 * cm, height - 2 * cm, width - 2 * cm - corner_size, height - 2 * cm)
+        p.line(width - 2 * cm, height - 2 * cm, width - 2 * cm, height - 2 * cm - corner_size)
+        p.line(2 * cm, height - 2 * cm, 2 * cm + corner_size, height - 2 * cm)
+        p.line(2 * cm, height - 2 * cm, 2 * cm, height - 2 * cm - corner_size)
+        p.line(width - 2 * cm, 2 * cm, width - 2 * cm - corner_size, 2 * cm)
+        p.line(width - 2 * cm, 2 * cm, width - 2 * cm, 2 * cm + corner_size)
+        p.line(2 * cm, 2 * cm, 2 * cm + corner_size, 2 * cm)
+        p.line(2 * cm, 2 * cm, 2 * cm, 2 * cm + corner_size)
+
+        p.setFont(arabic_font, 26)
+        p.setFillColorRGB(0, 0, 0)
+        title = reshape_arabic("جمعية الغد الأفضل")
+        p.drawCentredString(width / 2, height - 6 * cm, title)
+
+        p.setLineWidth(2)
+        p.line(width / 2 - 4 * cm, height - 6.5 * cm, width / 2 + 4 * cm, height - 6.5 * cm)
+
+        p.setFont(arabic_font, 18)
+        p.setFillColorRGB(0.2, 0.2, 0.2)
+        subtitle = reshape_arabic("استمارة التبرع بالدم")
+        p.drawCentredString(width / 2, height - 7.5 * cm, subtitle)
+
+        y_position = height - 9.5 * cm
+        box_height = 7 * cm
+        p.setFillColorRGB(0.95, 0.95, 0.95)
+        p.setStrokeColorRGB(0, 0, 0)
+        p.setLineWidth(1)
+        p.rect(3 * cm, y_position - box_height, width - 6 * cm, box_height, stroke=1, fill=1)
+
+        header_height = 0.8 * cm
+        p.setFillColorRGB(0, 0, 0)
+        p.rect(3 * cm, y_position - header_height, width - 6 * cm, header_height, stroke=0, fill=1)
+        p.setFont(arabic_font, 14)
+        p.setFillColorRGB(1, 1, 1)
+        p.drawCentredString(width / 2, y_position - 0.55 * cm, reshape_arabic("معلومات المتبرع"))
+
+        y_position -= 1.5 * cm
+        p.setFont(arabic_font, 11)
+        p.setFillColorRGB(0, 0, 0)
+        right_margin = width - 5 * cm
+        label_x = right_margin
+        value_x = right_margin - 3 * cm
+
+        def field(label, value, size=11):
+            nonlocal y_position
+            p.setFont(arabic_font, 10)
+            p.setFillColorRGB(0.3, 0.3, 0.3)
+            p.drawRightString(label_x, y_position, reshape_arabic(label))
+            p.setFont(arabic_font, size)
+            p.setFillColorRGB(0, 0, 0)
+            p.drawRightString(value_x, y_position, value if value and label == "الزمرة الدموية:" else reshape_arabic(value or ''))
+            y_position -= 0.7 * cm
+
+        field("الاسم:", donor.person.first_name)
+        field("اللقب:", donor.person.last_name)
+        field("تاريخ الميلاد:", donor.person.date_of_birth.strftime('%d-%m-%Y') if donor.person.date_of_birth else 'غير محدد')
+        field("الزمرة الدموية:", donor.blood_type or '', size=13)
+        field("تاريخ آخر تبرع:", donor.date_last_donation.strftime('%d-%m-%Y') if donor.date_last_donation else 'أول تبرع')
+
+        p.setFont(arabic_font, 10)
+        p.setFillColorRGB(0.3, 0.3, 0.3)
+        p.drawRightString(label_x, y_position, reshape_arabic("معلومات إضافية:"))
+        p.setFont(arabic_font, 9)
+        p.setFillColorRGB(0, 0, 0)
+        description = donor.description or 'لا توجد معلومات إضافية'
+        if len(description) > 30:
+            words = description.split()
+            lines, current_line = [], ""
+            for word in words:
+                if len(current_line + " " + word) <= 30:
+                    current_line += " " + word if current_line else word
+                else:
+                    lines.append(current_line)
+                    current_line = word
+            if current_line:
+                lines.append(current_line)
+            for i, line in enumerate(lines[:2]):
+                p.drawRightString(value_x, y_position - (i * 0.5 * cm), reshape_arabic(line))
+        else:
+            p.drawRightString(value_x, y_position, reshape_arabic(description))
+
+        y_position -= 2.5 * cm
+        box_height = 5.8 * cm
+        p.setFillColorRGB(0.95, 0.95, 0.95)
+        p.setStrokeColorRGB(0, 0, 0)
+        p.setLineWidth(1)
+        p.rect(3 * cm, y_position - box_height, width - 6 * cm, box_height, stroke=1, fill=1)
+        p.setFillColorRGB(0, 0, 0)
+        p.rect(3 * cm, y_position - header_height, width - 6 * cm, header_height, stroke=0, fill=1)
+        p.setFont(arabic_font, 14)
+        p.setFillColorRGB(1, 1, 1)
+        p.drawCentredString(width / 2, y_position - 0.55 * cm, reshape_arabic("معلومات المريض"))
+
+        y_position -= 1.5 * cm
+        field("الاسم:", patient.person.first_name)
+        field("اللقب:", patient.person.last_name)
+        field("تاريخ الميلاد:", patient.person.date_of_birth.strftime('%d-%m-%Y') if patient.person.date_of_birth else 'غير محدد')
+        field("الزمرة الدموية:", patient.blood_type or '', size=13)
+        field("المستشفى:", patient.hospital_name or 'غير محدد')
+
+        y_position -= 1.5 * cm
+        p.setStrokeColorRGB(0, 0, 0)
+        p.setLineWidth(1.5)
+        p.line(4 * cm, y_position, width - 4 * cm, y_position)
+
+        y_position = 5.5 * cm
+        p.setFont(arabic_font, 12)
+        p.setFillColorRGB(0, 0, 0)
+        p.drawString(4.5 * cm, y_position, reshape_arabic("رئيس الجمعية"))
+        p.setStrokeColorRGB(0, 0, 0)
+        p.setLineWidth(0.8)
+        p.line(4 * cm, y_position - 0.3 * cm, 7 * cm, y_position - 0.3 * cm)
+
+        p.setFont(arabic_font, 8)
+        p.setFillColorRGB(0.4, 0.4, 0.4)
+        footer = reshape_arabic("جمعية الغد الأفضل - نساهم في إنقاذ الأرواح")
+        p.drawCentredString(width / 2, 2.5 * cm, footer)
+        p.setStrokeColorRGB(0, 0, 0)
+        p.setLineWidth(0.5)
+        p.line(3 * cm, 3 * cm, width - 3 * cm, 3 * cm)
+
+        p.showPage()
+        p.save()
+        return response
