@@ -142,11 +142,13 @@ class DonationItemSerializer(serializers.ModelSerializer):
 
 
 class DrugDonationSerializer(serializers.ModelSerializer):
-    items = DonationItemSerializer(many=True)
+    items                  = DonationItemSerializer(many=True)
+    can_be_cancelled       = serializers.ReadOnlyField()
+    cancelled_by_username   = serializers.CharField(source='cancelled_by.username', read_only=True, default=None)
 
     class Meta:
         model  = DrugDonation
-        fields = "__all__"
+        fields = "__all__" 
 
     def create(self, validated_data):
         items_data = validated_data.pop('items')

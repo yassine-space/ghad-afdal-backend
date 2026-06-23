@@ -3,7 +3,8 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.core.exceptions import ValidationError
 from django.contrib.auth.models import AbstractUser
-from datetime import date
+from datetime import date, timedelta
+from django.utils import timezone
 class User(AbstractUser):
     """
     Custom User model replacing Django's default.
@@ -274,6 +275,7 @@ class DrugDonation(models.Model):
         ('other',    'Other'),
     ]
 
+    CANCELLATION_WINDOW_DAYS = 5
     donor          = models.CharField(max_length=100)
     donation_type  = models.CharField(max_length=20, choices=DONATION_TYPES)
     invoice_number = models.CharField(max_length=100, blank=True, null=True)
@@ -293,13 +295,29 @@ class DrugDonation(models.Model):
 
     def __str__(self):
         return f"{self.get_donation_type_display()} from {self.donor} ({self.donation_date})"
+    @property
+    def can_be_cancelled(self):
+        """
+        True only if the donation hasn't been cancelled yet AND it was
+        logged within CANCELLATION_WINDOW_DAYS of its donation_date.
+        """
+        if self.is_cancelled:
+            return False
+        return (timezone.now().date() - self.donation_date) <= timedelta(days=self.CANCELLATION_WINDOW_DAYS)
+    
     def cancel(self, user, reason=''):
         from django.db import transaction
-        from django.utils import timezone
-
+    
         if self.is_cancelled:
             raise ValidationError("This donation has already been cancelled.")
-
+    
+        if not self.can_be_cancelled:
+            raise ValidationError(
+                f"This donation can no longer be cancelled — cancellation is only "
+                f"allowed within {self.CANCELLATION_WINDOW_DAYS} days of its donation "
+                f"date ({self.donation_date})."
+            )
+    
         with transaction.atomic():
             for item in self.items.select_related('drug'):
                 try:
@@ -319,7 +337,7 @@ class DrugDonation(models.Model):
                     )
                 stock.quantity_available -= item.quantity
                 stock.save()
-
+    
             self.is_cancelled = True
             self.cancelled_at = timezone.now()
             self.cancelled_by = user
@@ -421,7 +439,6 @@ class DistributionItem(models.Model):
 # _____________________________________________
 # blood donation management models
 #__________________________________________
-from datetime import date, timedelta
 
 class Donor(models.Model):
     BLOOD_TYPES = [
