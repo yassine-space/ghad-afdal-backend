@@ -3,6 +3,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 
+
 from .views import (
     # Auth
     BloodDonationDashboardView,
@@ -67,4 +68,6 @@ urlpatterns = [
     path('certificate/<int:patient_id>/<int:donor_id>/', CertificateView.as_view(), name='certificate'),
     path('dashboard/stats/', BloodDonationDashboardView.as_view(), name='dashboard-stats'),
     path('', include(router.urls)),
+
+    # public endpoints
 ]

@@ -1,3 +1,4 @@
+import uuid
 from django.db import models
 from django.db.models.signals import post_save
 from django.dispatch import receiver
@@ -5,6 +6,7 @@ from django.core.exceptions import ValidationError
 from django.contrib.auth.models import AbstractUser
 from datetime import date, timedelta
 from django.utils import timezone
+
 class User(AbstractUser):
     """
     Custom User model replacing Django's default.
@@ -40,7 +42,7 @@ class Person(models.Model):
         ordering = ['last_name', 'first_name']
 
     def __str__(self):
-        return f"{self.first_name} {self.last_name} ({self.nin})"
+      return f"{self.first_name} {self.last_name} ({self.nin or 'No NIN'})"
 
     @property
     def age(self):
@@ -116,6 +118,24 @@ class Activity(models.Model):
     def __str__(self):
         return f"{self.name} ({self.department})"
 
+# class AssociationMembership(models.Model):
+#     person = models.OneToOneField(         
+#         Person,
+#         on_delete=models.CASCADE,
+#         related_name='association_membership'
+#     )
+#     status = models.CharField(
+#         max_length=20,
+#         choices=[('active', 'Active'), ('inactive', 'Inactive')],
+#         default='active'                     
+#     )
+#     join_date = models.DateField()
+#     public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+#     photo = models.ImageField(upload_to='association_photos/', blank=True, null=True)
+#     description = models.TextField(blank=True, null=True)
+
+#     def __str__(self):
+#         return f"{self.person} — {self.status}"
 
 class Member(models.Model):
     """
@@ -482,6 +502,7 @@ class Patient(models.Model):
 
 
 class DonationHistory(models.Model):
+
     patient       = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='donations_received')
     donor         = models.ForeignKey(Donor, on_delete=models.CASCADE, related_name='donations_given')
     donation_date = models.DateField(auto_now_add=True)
@@ -492,3 +513,24 @@ class DonationHistory(models.Model):
 
     def __str__(self):
         return f"{self.donor.person.first_name} تبرع لـ {self.patient.person.first_name} في {self.donation_date}"
+    
+
+class Machine(models.Model):
+    
+    STATUS_CHOICES = [
+        ('available', 'Available'),
+        ('destroyed', 'Destroyed'),
+        ('maintenance', 'Under Maintenance'),
+        ('assigned', 'Assigned'),
+    ]
+
+    identifier = models.CharField(max_length=50, unique=True) 
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='available')
+    photo = models.ImageField(upload_to='machines/', blank=True, null=True)
+    class Meta:
+        db_table = 'medical_machine'
+
+    def __str__(self):
+        return f"{self.name} ({self.identifier}) - {self.status}"

@@ -349,3 +349,20 @@ class DonationHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model  = DonationHistory
         fields = '__all__'
+
+
+# class PublicMembershipSerializer(serializers.ModelSerializer):
+#     first_name = serializers.CharField(source='person.first_name')
+#     last_name = serializers.CharField(source='person.last_name')
+#     phone = serializers.CharField(source='person.phone')
+
+#     class Meta:
+#         model = AssociationMembership
+#         fields = [
+#             'first_name',
+#             'last_name',
+#             'phone',
+#             'photo',
+#             'status',
+#             'description'
+#         ]
