@@ -1,3 +1,5 @@
+from urllib import request
+
 from django.http import HttpResponse
 from rest_framework import viewsets, status
 from rest_framework.permissions import IsAuthenticated
@@ -7,11 +9,14 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from datetime import timedelta,date
 from django.conf import settings             # missing — needed by certificate PDF generation
 from django.db.models import Sum, Q          # was: from django.db.models import Sum
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.core.exceptions import ValidationError
+from io import BytesIO
 import os
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -19,6 +24,9 @@ from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
+import barcode
+from barcode.writer import ImageWriter
+from .serializers import MachineSerializer, MachineAssignmentSerializer
 
 from .models import (
     DonationHistory,
@@ -35,6 +43,8 @@ from .models import (
     DrugDistribution,
     DistributionItem,
     get_user_activities,
+    Machine,
+    MachineAssignment
 )
 
 from .serializers import (
@@ -50,6 +60,8 @@ from .serializers import (
     DrugStockSerializer,
     DrugDonationSerializer,
     DrugDistributionSerializer,
+    MachineSerializer,
+    MachineAssignmentSerializer
 )
 
 from .permissions import (
@@ -839,3 +851,311 @@ class CertificateView(APIView):
         p.showPage()
         p.save()
         return response
+    
+
+# machine
+
+
+# Keywords that match your machines activity in the admin panel
+MACHINE_KEYWORDS = ['machine', 'جهاز', 'equipment', 'معدات']
+
+
+def normalize_machine_barcode(raw_code):
+    """
+    Normalize barcodes generated as M-{PREFIX}{id}, e.g. 'm-ct05' and
+    'M-CT5' should both resolve to 'M-CT5' — strips leading zeros from the
+    trailing numeric id, uppercases the rest, and preserves the '-' separator.
+    """
+    code = (raw_code or '').strip().upper()
+    if code.startswith('M-'):
+        body = code[2:]
+        # split into the alpha prefix and the trailing digit run
+        i = len(body)
+        while i > 0 and body[i - 1].isdigit():
+            i -= 1
+        prefix, digits = body[:i], body[i:]
+        if digits.isdigit():
+            return f"M-{prefix}{int(digits)}"
+    return code
+
+class MachineViewSet(viewsets.ModelViewSet):
+    """
+    GET            → viewer
+    POST/PUT/PATCH → editor
+    DELETE         → manager
+    Requires an activity whose name contains one of MACHINE_KEYWORDS.
+    """
+    queryset           = Machine.objects.all() 
+    serializer_class   = MachineSerializer
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = MACHINE_KEYWORDS
+
+    def get_serializer_context(self):
+        # Pass request so get_photo_url can build absolute URLs
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
+
+    @action(detail=False, methods=['get'], url_path='by-barcode/(?P<bar_code>[^/.]+)')
+    def by_barcode(self, request, bar_code=None):
+        """GET /api/machines/by-barcode/<bar_code>/"""
+        machine = get_object_or_404(Machine, bar_code=normalize_machine_barcode(bar_code))
+        return Response(MachineSerializer(machine, context={'request': request}).data)
+
+    @action(detail=True, methods=['patch'], url_path='set-status')
+    def set_status(self, request, pk=None):
+        """
+        PATCH /api/machines/{id}/set-status/
+        Body: { "status": "maintenance" }
+        Editor level required. 'assigned' is blocked — use assignments instead.
+        """
+        machine    = self.get_object()
+        new_status = request.data.get('status')
+        allowed    = ['available', 'destroyed', 'maintenance']
+        if new_status not in allowed:
+            return Response(
+                {'detail': f'القيم المسموح بها: {allowed}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        machine.status = new_status
+        machine.save()
+        return Response(MachineSerializer(machine, context={'request': request}).data)
+    @action(detail=False, methods=["post"], url_path="print-barcodes")
+    def print_barcodes(self, request):
+        """
+        POST /api/machines/print-barcodes/
+        Body: { "ids": [1, 2, 3, ...] }
+        Returns a multi-page PDF with barcode labels for each valid machine.
+        Missing/invalid IDs are reported via the X-Missing-Ids response header.
+        """
+        ids = request.data.get("ids", [])
+        if not ids:
+            return Response(
+                {"detail": "No machines selected."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    
+        machines = Machine.objects.filter(id__in=ids)
+        if not machines.exists():
+            return Response(
+                {"detail": "No valid machines found for the provided IDs."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+    
+        # Track which requested ids weren't found
+        found_ids = set(machines.values_list("id", flat=True))
+        missing_ids = [str(i) for i in ids if int(i) not in found_ids]
+    
+        # PDF generation
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=A4)
+        width, height = A4
+    
+        # Layout settings
+        labels_per_row = 3
+        label_width = 180
+        label_height = 120
+        margin_x = 20
+        margin_y = 20
+        x_gap = 15
+        y_gap = 20
+        barcode_height = 40
+        font_name = "Helvetica"
+        font_size = 9
+    
+        # Start position
+        x = margin_x
+        y = height - margin_y - label_height
+    
+        for machine in machines:
+            CODE128 = barcode.get_barcode_class('code128')
+            code = CODE128(machine.bar_code, writer=ImageWriter())
+            barcode_buffer = BytesIO()
+            code.write(barcode_buffer)
+            barcode_buffer.seek(0)
+            barcode_image = ImageReader(barcode_buffer)
+    
+            c.drawImage(barcode_image, x, y, width=label_width, height=barcode_height)
+            c.setFont(font_name, font_size)
+            c.drawString(x, y - 12, machine.name)
+            c.drawString(x, y - 24, machine.bar_code)
+    
+            # Move to next horizontal slot
+            x += label_width + x_gap
+            if x + label_width > width - margin_x:
+                x = margin_x
+                y -= label_height + y_gap
+    
+                # New page if we've run out of vertical space
+                if y < margin_y:
+                    c.showPage()
+                    x = margin_x
+                    y = height - margin_y - label_height
+    
+        c.save()
+        buffer.seek(0)
+        pdf = buffer.getvalue()
+    
+        response = HttpResponse(pdf, content_type="application/pdf")
+        response["Content-Disposition"] = 'inline; filename="machine_barcodes.pdf"'
+        if missing_ids:
+            response["X-Missing-Ids"] = ",".join(missing_ids)
+        return response
+
+
+    @action(detail=True, methods=['get'], url_path='history')
+    def history(self, request, pk=None):
+        """GET /api/machines/{id}/history/  → all assignments for this machine"""
+        machine     = self.get_object()
+        assignments = machine.assignments.select_related('assigned_to').all()
+        return Response(MachineAssignmentSerializer(assignments, many=True).data)
+
+
+class MachineAssignmentViewSet(viewsets.ModelViewSet):
+    """
+    GET    → viewer
+    POST   → editor  (assign machine)
+    DELETE → manager (delete record entirely — prefer return_machine instead)
+
+    POST /api/machine-assignments/{id}/return/  → mark as returned
+    """
+    queryset           = MachineAssignment.objects.select_related('machine', 'assigned_to').all()
+    serializer_class   = MachineAssignmentSerializer
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = MACHINE_KEYWORDS
+
+    @staticmethod
+    def _normalize_bar_code(raw_code):
+        """Accept GA1 and GA01 as the same machine barcode."""
+        return normalize_machine_barcode(raw_code)
+
+    def get_queryset(self):
+        qs        = super().get_queryset()
+        active    = self.request.query_params.get('active')     # ?active=true
+        machine   = self.request.query_params.get('machine')    # ?machine=5
+        person    = self.request.query_params.get('person')     # ?person=3
+        if active == 'true':
+            qs = qs.filter(returned_at__isnull=True)
+        if machine:
+            qs = qs.filter(machine_id=machine)
+        if person:
+            qs = qs.filter(assigned_to_id=person)
+        return qs
+
+    @action(detail=False, methods=['post'], url_path='assign-by-barcode')
+    def assign_by_barcode(self, request):
+        """
+        POST /api/machine-assignments/assign-by-barcode/
+        Body: { "bar_code": "GA01", "assigned_to": 3, "description": "..." }
+        """
+        bar_code = self._normalize_bar_code(request.data.get('bar_code'))
+        assigned_to = request.data.get('assigned_to')
+        description = request.data.get('description', '')
+
+        if not bar_code or not assigned_to:
+            return Response(
+                {'detail': 'bar_code و assigned_to مطلوبان.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        machine = Machine.objects.filter(bar_code=bar_code).first()
+        if not machine:
+            return Response(
+                {'detail': f'لم يتم العثور على جهاز بالباركود {bar_code}.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if machine.status != 'available':
+            return Response(
+                {'detail': 'هذا الجهاز غير متاح حالياً للإسناد.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = self.get_serializer(data={
+            'machine': machine.id,
+            'assigned_to': assigned_to,
+            'description': description,
+        })
+        serializer.is_valid(raise_exception=True)
+        assignment = serializer.save()
+        return Response(
+            self.get_serializer(assignment).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=['post'], url_path='return-by-barcode')
+    def return_by_barcode(self, request):
+        """
+        POST /api/machine-assignments/return-by-barcode/
+        Body: { "bar_code": "GA01", "returned_at": "2026-06-29T10:00:00Z", "description": "..." }
+        """
+        bar_code = self._normalize_bar_code(request.data.get('bar_code'))
+        returned_at_raw = request.data.get('returned_at')
+        return_description = request.data.get('description', '')
+
+        if not bar_code:
+            return Response({'detail': 'bar_code مطلوب.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        machine = Machine.objects.filter(bar_code=bar_code).first()
+        if not machine:
+            return Response(
+                {'detail': f'لم يتم العثور على جهاز بالباركود {bar_code}.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        assignment = (
+            MachineAssignment.objects
+            .filter(machine=machine, returned_at__isnull=True)
+            .order_by('-assigned_at')
+            .first()
+        )
+        if not assignment:
+            return Response(
+                {'detail': 'لا يوجد إسناد نشط لهذا الجهاز.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        returned_at = None
+        if returned_at_raw:
+            returned_at = parse_datetime(returned_at_raw)
+            if returned_at is None:
+                return Response(
+                    {'detail': 'صيغة returned_at غير صحيحة. استخدم ISO datetime.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if timezone.is_naive(returned_at):
+                returned_at = timezone.make_aware(returned_at, timezone.get_current_timezone())
+
+        try:
+            assignment.return_machine(returned_at=returned_at, return_description=return_description)
+        except ValidationError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(self.get_serializer(assignment).data)
+
+    @action(detail=True, methods=['post'], url_path='return')
+    def return_machine(self, request, pk=None):
+        """
+        POST /api/machine-assignments/{id}/return/
+        Optional body: { "returned_at": "ISO datetime", "description": "..." }
+        """
+        assignment = self.get_object()
+        returned_at_raw = request.data.get('returned_at')
+        return_description = request.data.get('description', '')
+
+        returned_at = None
+        if returned_at_raw:
+            returned_at = parse_datetime(returned_at_raw)
+            if returned_at is None:
+                return Response(
+                    {'detail': 'صيغة returned_at غير صحيحة. استخدم ISO datetime.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if timezone.is_naive(returned_at):
+                returned_at = timezone.make_aware(returned_at, timezone.get_current_timezone())
+
+        try:
+            assignment.return_machine(returned_at=returned_at, return_description=return_description)
+        except ValidationError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(MachineAssignmentSerializer(assignment).data)

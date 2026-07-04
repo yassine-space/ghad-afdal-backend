@@ -515,8 +515,12 @@ class DonationHistory(models.Model):
         return f"{self.donor.person.first_name} تبرع لـ {self.patient.person.first_name} في {self.donation_date}"
     
 
+# ─────────────────────────────────────────────
+# MEDICAL MACHINES
+# ─────────────────────────────────────────────
+
 class Machine(models.Model):
-    
+
     STATUS_CHOICES = [
         ('available', 'Available'),
         ('destroyed', 'Destroyed'),
@@ -524,13 +528,83 @@ class Machine(models.Model):
         ('assigned', 'Assigned'),
     ]
 
-    identifier = models.CharField(max_length=50, unique=True) 
+    bar_code = models.CharField(max_length=50, unique=True, blank=True)
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='available')
     photo = models.ImageField(upload_to='machines/', blank=True, null=True)
+
     class Meta:
         db_table = 'medical_machine'
 
+    def save(self, *args, **kwargs):
+        # First save to obtain the ID
+        if self.pk is None:
+            super().save(*args, **kwargs)
+
+        # Generate the barcode only if it doesn't already exist
+        if not self.bar_code:
+            words = self.name.strip().split()
+            if len(words) == 1:
+                prefix = words[0][:3].upper()
+            else:
+                prefix = "".join(word[0].upper() for word in words)
+            self.bar_code = f"M-{prefix}{self.id}"
+
+            # Save only the barcode field
+            super().save(update_fields=["bar_code"])
+
+        else:
+            super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"{self.name} ({self.identifier}) - {self.status}"
+        return f"{self.name} ({self.bar_code}) - {self.status}"
+
+class MachineAssignment(models.Model):
+    machine     = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='assignments')
+    assigned_to = models.ForeignKey(Person,  on_delete=models.CASCADE, related_name='machine_assignments')
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    returned_at = models.DateTimeField(blank=True, null=True)
+    description = models.TextField(blank=True, null=True)
+
+    class Meta:
+        db_table = 'machine_assignment'
+        ordering = ['-assigned_at']
+
+    def __str__(self):
+        return (
+            f"{self.machine.name} → "
+            f"{self.assigned_to.first_name} {self.assigned_to.last_name} "
+            f"({self.assigned_at:%Y-%m-%d})"
+        )
+
+    def return_machine(self, returned_at=None, return_description=''):
+        """Mark assignment as returned with optional return date and note."""
+        from django.utils import timezone
+        if self.returned_at:
+            raise ValidationError("This assignment has already been returned.")
+
+        self.returned_at = returned_at or timezone.now()
+
+        note = (return_description or '').strip()
+        if note:
+            existing = (self.description or '').strip()
+            return_note = f"Return note: {note}"
+            self.description = f"{existing}\n{return_note}" if existing else return_note
+
+        self.save()
+        # Only mark available if no other active assignment exists
+        active = MachineAssignment.objects.filter(
+            machine=self.machine, returned_at__isnull=True
+        ).exclude(pk=self.pk).exists()
+        if not active:
+            self.machine.status = 'available'
+            self.machine.save()
+
+
+@receiver(post_save, sender=MachineAssignment)
+def update_machine_status_on_assign(sender, instance, created, **kwargs):
+    """Auto-set machine status to 'assigned' when a new assignment is created."""
+    if created:
+        instance.machine.status = 'assigned'
+        instance.machine.save()

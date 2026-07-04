@@ -18,6 +18,8 @@ from .models import (
     DonationItem,
     DrugDistribution,
     DistributionItem,
+    Machine,
+    MachineAssignment,
 )
 
 
@@ -351,18 +353,51 @@ class DonationHistorySerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
-# class PublicMembershipSerializer(serializers.ModelSerializer):
-#     first_name = serializers.CharField(source='person.first_name')
-#     last_name = serializers.CharField(source='person.last_name')
-#     phone = serializers.CharField(source='person.phone')
 
-#     class Meta:
-#         model = AssociationMembership
-#         fields = [
-#             'first_name',
-#             'last_name',
-#             'phone',
-#             'photo',
-#             'status',
-#             'description'
-#         ]
+class MachineSerializer(serializers.ModelSerializer):
+    photo_url           = serializers.SerializerMethodField()
+    class Meta:
+        model  = Machine
+        fields = [
+            'id', 'bar_code', 'name', 'description',
+            'status', 'photo', 'photo_url',
+        ]
+        read_only_fields = ['bar_code']   # auto-generated
+
+    def get_photo_url(self, obj):
+        request = self.context.get('request')
+        if obj.photo and request:
+            return request.build_absolute_uri(obj.photo.url)
+        return None
+
+
+class MachineAssignmentSerializer(serializers.ModelSerializer):
+    person_name  = serializers.SerializerMethodField()
+    machine_name = serializers.CharField(source='machine.name',     read_only=True)
+    bar_code     = serializers.CharField(source='machine.bar_code', read_only=True)
+    is_returned  = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = MachineAssignment
+        fields = [
+            'id', 'machine', 'machine_name', 'bar_code',
+            'assigned_to', 'person_name',
+            'assigned_at', 'returned_at', 'is_returned',
+            'description',
+        ]
+        read_only_fields = ['assigned_at', 'returned_at']
+
+    def get_person_name(self, obj):
+        return f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}"
+
+    def get_is_returned(self, obj):
+        return obj.returned_at is not None
+
+    def validate(self, data):
+        machine = data.get('machine')
+        # On create only — block assigning an already-assigned machine
+        if self.instance is None and machine and machine.status == 'assigned':
+            raise serializers.ValidationError(
+                {'machine': f'الجهاز "{machine.name}" مُسند حالياً. يجب إرجاعه أولاً.'}
+            )
+        return data

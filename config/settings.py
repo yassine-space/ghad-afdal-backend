@@ -11,16 +11,27 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-u1xwq@jsz*53zk826p6-+54-8%w_(8g22vgoa9$sx%l&8&^db8')
 DEBUG = os.getenv("DEBUG", "False") == "True"
+IS_DEBUG = DEBUG
+ALLOW_LAN_TESTING = os.getenv("ALLOW_LAN_TESTING", "True") == "True"
 CSRF_TRUSTED_ORIGINS = [
     'https://ghad-afdal-frontend.vercel.app',
     'https://ghad-afdal-api.onrender.com',
 ]
+
+if IS_DEBUG or ALLOW_LAN_TESTING:
+    CSRF_TRUSTED_ORIGINS += [
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+    ]
 
 ALLOWED_HOSTS = [
     "ghad-afdal-api.onrender.com",
     "localhost",
     "127.0.0.1",
 ]
+
+if IS_DEBUG or ALLOW_LAN_TESTING:
+    ALLOWED_HOSTS += ['*']
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -57,6 +68,9 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
+
+if IS_DEBUG or ALLOW_LAN_TESTING:
+    CORS_ALLOW_ALL_ORIGINS = True
 # Allow all methods
 CORS_ALLOW_METHODS = [
     'DELETE',
@@ -179,3 +193,8 @@ SIMPLE_JWT = {
     'BLACKLIST_AFTER_ROTATION': False,
     'UPDATE_LAST_LOGIN': True,
 }
+CORS_EXPOSE_HEADERS = [
+    'Content-Type',
+    'X-CSRFToken',
+    'Authorization',
+    'X-Missing-Ids']

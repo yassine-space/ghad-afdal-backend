@@ -2,8 +2,8 @@ from django import views
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
-
-
+from django.conf.urls.static import static
+from django.conf import settings
 from .views import (
     # Auth
     BloodDonationDashboardView,
@@ -30,6 +30,8 @@ from .views import (
     DonorViewSet,
     PatientViewSet,
     DonationHistoryViewSet,
+    MachineViewSet,
+    MachineAssignmentViewSet
 
 )
 
@@ -46,9 +48,10 @@ router.register(r'drugs',         DrugViewSet)
 router.register(r'stocks',        DrugStockViewSet,        basename='drugstock')
 router.register(r'donations',     DrugDonationViewSet)
 router.register(r'distributions', DrugDistributionViewSet)
+router.register(r'machines',            MachineViewSet,           basename='machine')
+router.register(r'machine-assignments', MachineAssignmentViewSet, basename='machine-assignment')
 
 urlpatterns = [
-    # ── Router endpoints ──────────────────────────────────────────────────────
     
 
     # ── Auth endpoints ────────────────────────────────────────────────────────
@@ -67,7 +70,12 @@ urlpatterns = [
     path('patients/with-compatible-donors/', CompatibleDonorsView.as_view(), name='patients-with-donors'),
     path('certificate/<int:patient_id>/<int:donor_id>/', CertificateView.as_view(), name='certificate'),
     path('dashboard/stats/', BloodDonationDashboardView.as_view(), name='dashboard-stats'),
+    # ── machine endpoints ──────────────────────────────────────────────────────
+
+    # ── Router endpoints ──────────────────────────────────────────────────────
     path('', include(router.urls)),
 
     # public endpoints
 ]
+
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
