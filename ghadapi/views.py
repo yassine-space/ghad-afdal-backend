@@ -951,44 +951,81 @@ class MachineViewSet(viewsets.ModelViewSet):
         c = canvas.Canvas(buffer, pagesize=A4)
         width, height = A4
     
-        # Layout settings
+        # Layout settings — 3 labels per row, bordered cards
         labels_per_row = 3
-        label_width = 180
-        label_height = 120
-        margin_x = 20
-        margin_y = 20
+        margin_x = 30
+        margin_y = 30
         x_gap = 15
-        y_gap = 20
-        barcode_height = 40
-        font_name = "Helvetica"
-        font_size = 9
+        y_gap = 15
     
-        # Start position
+        label_width = (width - 2 * margin_x - (labels_per_row - 1) * x_gap) / labels_per_row
+        label_height = 105
+        barcode_height = 45
+        title_font_size = 12
+        code_font_size = 10
+    
+        # Optional page title
+        c.setFont("Helvetica-Bold", 14)
+        c.drawCentredString(width / 2, height - margin_y + 5, "Machine Barcodes")
+    
         x = margin_x
-        y = height - margin_y - label_height
+        y = height - margin_y - 25 - label_height  # leave room for page title on first page
     
-        for machine in machines:
+        def draw_label(c, x, y, machine):
+            """Draws one bordered label card at top-left corner (x, y)."""
+            local_title_font_size = title_font_size  # local copy, doesn't touch outer scope
+        
+            # Border box
+            c.setStrokeColorRGB(0, 0, 0)
+            c.setLineWidth(1)
+            c.rect(x, y, label_width, label_height, stroke=1, fill=0)
+        
+            # Title (machine name), centered near the top
+            title = machine.name
+            while c.stringWidth(title, "Helvetica-Bold", local_title_font_size) > label_width - 10 and local_title_font_size > 7:
+                local_title_font_size -= 1
+            c.setFont("Helvetica-Bold", local_title_font_size)
+            c.drawCentredString(x + label_width / 2, y + label_height - 20, title)
+        
+            # Barcode image, centered horizontally
             CODE128 = barcode.get_barcode_class('code128')
-            code = CODE128(machine.bar_code, writer=ImageWriter())
+            code = CODE128(machine.bar_code or 'N/A', writer=ImageWriter())
             barcode_buffer = BytesIO()
-            code.write(barcode_buffer)
+            code.write(barcode_buffer, options={"write_text": False})
             barcode_buffer.seek(0)
             barcode_image = ImageReader(barcode_buffer)
+        
+            bc_width = label_width - 20
+            bc_x = x + (label_width - bc_width) / 2
+            bc_y = y + (label_height - barcode_height) / 2 - 5
+            c.drawImage(
+                barcode_image, bc_x, bc_y,
+                width=bc_width, height=barcode_height,
+                preserveAspectRatio=False, mask='auto'
+            )
+
+            # Bar code text, centered below the barcode
+            c.setFont("Helvetica", code_font_size)
+            c.drawCentredString(
+                x + label_width / 2,
+                bc_y - 12,
+                machine.bar_code or 'N/A'
+            )
     
-            c.drawImage(barcode_image, x, y, width=label_width, height=barcode_height)
-            c.setFont(font_name, font_size)
-            c.drawString(x, y - 12, machine.name)
-            c.drawString(x, y - 24, machine.bar_code)
+        first_page = True
+        for machine in machines:
+            draw_label(c, x, y, machine)
     
             # Move to next horizontal slot
             x += label_width + x_gap
-            if x + label_width > width - margin_x:
+            if x + label_width > width - margin_x + 1:
                 x = margin_x
                 y -= label_height + y_gap
     
                 # New page if we've run out of vertical space
                 if y < margin_y:
                     c.showPage()
+                    first_page = False
                     x = margin_x
                     y = height - margin_y - label_height
     
@@ -1001,7 +1038,6 @@ class MachineViewSet(viewsets.ModelViewSet):
         if missing_ids:
             response["X-Missing-Ids"] = ",".join(missing_ids)
         return response
-
 
     @action(detail=True, methods=['get'], url_path='history')
     def history(self, request, pk=None):
@@ -1028,7 +1064,29 @@ class MachineAssignmentViewSet(viewsets.ModelViewSet):
     def _normalize_bar_code(raw_code):
         """Accept GA1 and GA01 as the same machine barcode."""
         return normalize_machine_barcode(raw_code)
-
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {'detail': 'لا يمكن حذف سجل الإسناد نهائياً.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if timezone.now() - instance.assigned_at > timedelta(days=1):
+            return Response(
+                {'detail': 'لا يمكن تعديل هذا الإسناد بعد مرور أكثر من يوم واحد على تاريخ الإسناد.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return super().update(request, *args, **kwargs)
+    
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if timezone.now() - instance.assigned_at > timedelta(days=1):
+            return Response(
+                {'detail': 'لا يمكن تعديل هذا الإسناد بعد مرور أكثر من يوم واحد على تاريخ الإسناد.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return super().partial_update(request, *args, **kwargs)
     def get_queryset(self):
         qs        = super().get_queryset()
         active    = self.request.query_params.get('active')     # ?active=true

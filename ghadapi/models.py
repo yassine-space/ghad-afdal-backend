@@ -589,7 +589,7 @@ class MachineAssignment(models.Model):
         note = (return_description or '').strip()
         if note:
             existing = (self.description or '').strip()
-            return_note = f"Return note: {note}"
+            return_note = f"{note}"
             self.description = f"{existing}\n{return_note}" if existing else return_note
 
         self.save()
