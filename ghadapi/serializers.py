@@ -360,7 +360,7 @@ class MachineSerializer(serializers.ModelSerializer):
         model  = Machine
         fields = [
             'id', 'bar_code', 'name', 'description',
-            'status', 'photo', 'photo_url',
+            'status', 'photo', 'photo_url','acquisition_date'
         ]
         read_only_fields = ['bar_code']   # auto-generated
 

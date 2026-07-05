@@ -533,7 +533,7 @@ class Machine(models.Model):
     description = models.TextField(blank=True, null=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='available')
     photo = models.ImageField(upload_to='machines/', blank=True, null=True)
-
+    acquisition_date = models.DateField(null=True, blank=True)
     class Meta:
         db_table = 'medical_machine'
 
