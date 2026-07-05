@@ -204,6 +204,9 @@ CORS_EXPOSE_HEADERS = [
 # Production → files saved to Cloudflare R2 (S3-compatible), served via public R2 URL
 # Toggle is controlled by USE_R2 env var (set it to True on Render only).
 # ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# MEDIA / FILE STORAGE
+# ─────────────────────────────────────────────
 
 USE_R2 = os.getenv("USE_R2", "False") == "True"
 
@@ -214,15 +217,23 @@ if USE_R2:
     AWS_ACCESS_KEY_ID = os.environ["AWS_ACCESS_KEY_ID"]
     AWS_SECRET_ACCESS_KEY = os.environ["AWS_SECRET_ACCESS_KEY"]
     AWS_STORAGE_BUCKET_NAME = os.environ["AWS_STORAGE_BUCKET_NAME"]
-    AWS_S3_ENDPOINT_URL = os.environ["AWS_S3_ENDPOINT_URL"]        # https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+    AWS_S3_ENDPOINT_URL = os.environ["AWS_S3_ENDPOINT_URL"]
     AWS_S3_REGION_NAME = os.environ.get("AWS_S3_REGION_NAME", "auto")
-    AWS_S3_CUSTOM_DOMAIN = os.environ["AWS_S3_CUSTOM_DOMAIN"]      # e.g. pub-xxxxxxxx.r2.dev (no https://, no trailing slash)
+    AWS_S3_CUSTOM_DOMAIN = os.environ["AWS_S3_CUSTOM_DOMAIN"]  # e.g. pub-xxxx.r2.dev — no scheme, no trailing slash
 
     AWS_DEFAULT_ACL = None
     AWS_QUERYSTRING_AUTH = False
     AWS_S3_SIGNATURE_VERSION = "s3v4"
 
-    DEFAULT_FILE_STORAGE = "storages.backends.s3.S3Storage"
     MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/"
-# else: falls through to local disk storage (Django's default FileSystemStorage),
-# MEDIA_ROOT/MEDIA_URL above are used as-is, exactly like your current local setup.
+
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+# else: no STORAGES override → Django uses its built-in FileSystemStorage,
+# saving to MEDIA_ROOT and serving from MEDIA_URL, exactly like local dev.
