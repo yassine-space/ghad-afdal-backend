@@ -365,10 +365,16 @@ class MachineSerializer(serializers.ModelSerializer):
         read_only_fields = ['bar_code']   # auto-generated
 
     def get_photo_url(self, obj):
+        if not obj.photo:
+            return None
+        url = obj.photo.url
+        if url.startswith('http://') or url.startswith('https://'):
+            # Already an absolute URL (R2/S3 storage) — use as-is
+            return url
         request = self.context.get('request')
-        if obj.photo and request:
-            return request.build_absolute_uri(obj.photo.url)
-        return None
+        if request:
+            return request.build_absolute_uri(url)
+        return url
 
 
 class MachineAssignmentSerializer(serializers.ModelSerializer):
