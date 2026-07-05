@@ -7,6 +7,5 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("ghadapi.urls")),
 ]
-
-if settings.DEBUG:
+if not settings.USE_R2:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

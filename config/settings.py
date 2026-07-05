@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'corsheaders',  
     'ghadapi',
     'rest_framework_simplejwt',
+    "storages",
 ]
 
 MIDDLEWARE = [
@@ -111,8 +112,6 @@ TEMPLATES = [
         },
     },
 ]
-MEDIA_URL='/media/'
-MEDIA_ROOT=os.path.join(BASE_DIR, 'media')
 WSGI_APPLICATION = 'config.wsgi.application'
 
 # Database
@@ -198,3 +197,32 @@ CORS_EXPOSE_HEADERS = [
     'X-CSRFToken',
     'Authorization',
     'X-Missing-Ids']
+
+# ─────────────────────────────────────────────
+# MEDIA / FILE STORAGE
+# Local dev  → files saved to disk at MEDIA_ROOT, served by Django (DEBUG=True)
+# Production → files saved to Cloudflare R2 (S3-compatible), served via public R2 URL
+# Toggle is controlled by USE_R2 env var (set it to True on Render only).
+# ─────────────────────────────────────────────
+
+USE_R2 = os.getenv("USE_R2", "False") == "True"
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+if USE_R2:
+    AWS_ACCESS_KEY_ID = os.environ["AWS_ACCESS_KEY_ID"]
+    AWS_SECRET_ACCESS_KEY = os.environ["AWS_SECRET_ACCESS_KEY"]
+    AWS_STORAGE_BUCKET_NAME = os.environ["AWS_STORAGE_BUCKET_NAME"]
+    AWS_S3_ENDPOINT_URL = os.environ["AWS_S3_ENDPOINT_URL"]        # https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+    AWS_S3_REGION_NAME = os.environ.get("AWS_S3_REGION_NAME", "auto")
+    AWS_S3_CUSTOM_DOMAIN = os.environ["AWS_S3_CUSTOM_DOMAIN"]      # e.g. pub-xxxxxxxx.r2.dev (no https://, no trailing slash)
+
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = False
+    AWS_S3_SIGNATURE_VERSION = "s3v4"
+
+    DEFAULT_FILE_STORAGE = "storages.backends.s3.S3Storage"
+    MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/"
+# else: falls through to local disk storage (Django's default FileSystemStorage),
+# MEDIA_ROOT/MEDIA_URL above are used as-is, exactly like your current local setup.
