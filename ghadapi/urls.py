@@ -29,7 +29,13 @@ from .views import (
     PatientViewSet,
     DonationHistoryViewSet,
     MachineViewSet,
-    MachineAssignmentViewSet
+    MachineAssignmentViewSet,
+    FinancialCategoryViewSet,
+    DonationViewSet, 
+    ExpenseTransactionViewSet,
+    FinancialDashboardView, 
+    FinancialReportView, 
+    FinancialAuditLogViewSet,
 
 )
 
@@ -48,6 +54,10 @@ router.register(r'donations',     DrugDonationViewSet)
 router.register(r'distributions', DrugDistributionViewSet)
 router.register(r'machines',            MachineViewSet,           basename='machine')
 router.register(r'machine-assignments', MachineAssignmentViewSet, basename='machine-assignment')
+router.register(r'finance/categories', FinancialCategoryViewSet, basename='finance-category')
+router.register(r'finance/donations', DonationViewSet, basename='donation')
+router.register(r'finance/expenses', ExpenseTransactionViewSet, basename='expense')
+router.register(r'finance/audit-log', FinancialAuditLogViewSet, basename='finance-audit-log')
 
 urlpatterns = [
     
@@ -69,7 +79,8 @@ urlpatterns = [
     path('certificate/<int:patient_id>/<int:donor_id>/', CertificateView.as_view(), name='certificate'),
     path('dashboard/stats/', BloodDonationDashboardView.as_view(), name='dashboard-stats'),
     # ── machine endpoints ──────────────────────────────────────────────────────
-
+    path('finance/dashboard/', FinancialDashboardView.as_view(), name='finance-dashboard'),
+    path('finance/reports/', FinancialReportView.as_view(), name='finance-reports'),
     # ── Router endpoints ──────────────────────────────────────────────────────
     path('', include(router.urls)),
 

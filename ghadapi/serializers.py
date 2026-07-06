@@ -407,3 +407,102 @@ class MachineAssignmentSerializer(serializers.ModelSerializer):
                 {'machine': f'الجهاز "{machine.name}" مُسند حالياً. يجب إرجاعه أولاً.'}
             )
         return data
+    
+
+
+from .models import FinancialCategory, Donation, ExpenseTransaction, FinancialSettings, FinancialAuditLog, log_finance_action
+
+
+class FinancialCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = FinancialCategory
+        fields = ['id', 'name']
+
+
+class DonationSerializer(serializers.ModelSerializer):
+    category_name  = serializers.CharField(source='category.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True, default=None)
+    receipt_url    = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Donation
+        fields = [
+            'id', 'donor_name', 'amount', 'payment_method', 'category', 'category_name',
+            'date', 'notes', 'receipt', 'receipt_url', 'created_by', 'created_by_name', 'created_at',
+        ]
+        read_only_fields = ['created_by', 'created_at']
+
+    def get_receipt_url(self, obj):
+        if not obj.receipt:
+            return None
+        url = obj.receipt.url
+        if url.startswith('http://') or url.startswith('https://'):
+            return url
+        request = self.context.get('request')
+        return request.build_absolute_uri(url) if request else url
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        validated_data['created_by'] = request.user if request else None
+        instance = super().create(validated_data)
+        log_finance_action(request.user if request else None, 'create', 'Donation', instance.id,
+                            f"{instance.donor_name} - {instance.amount} DZD")
+        return instance
+
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        instance = super().update(instance, validated_data)
+        log_finance_action(request.user if request else None, 'update', 'Donation', instance.id)
+        return instance
+
+
+class ExpenseTransactionSerializer(serializers.ModelSerializer):
+    category_name  = serializers.CharField(source='category.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True, default=None)
+    receipt_url    = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = ExpenseTransaction
+        fields = [
+            'id', 'amount', 'category', 'category_name', 'description', 'date',
+            'receipt', 'receipt_url', 'created_by', 'created_by_name',
+            'related_distribution', 'created_at',
+        ]
+        read_only_fields = ['created_by', 'created_at']
+
+    def get_receipt_url(self, obj):
+        if not obj.receipt:
+            return None
+        url = obj.receipt.url
+        if url.startswith('http://') or url.startswith('https://'):
+            return url
+        request = self.context.get('request')
+        return request.build_absolute_uri(url) if request else url
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        validated_data['created_by'] = request.user if request else None
+        instance = super().create(validated_data)
+        log_finance_action(request.user if request else None, 'create', 'ExpenseTransaction', instance.id,
+                            f"{instance.amount} DZD - {instance.description}")
+        return instance
+
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        instance = super().update(instance, validated_data)
+        log_finance_action(request.user if request else None, 'update', 'ExpenseTransaction', instance.id)
+        return instance
+
+
+class FinancialSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model  = FinancialSettings
+        fields = ['id', 'low_budget_threshold']
+
+
+class FinancialAuditLogSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True, default=None)
+
+    class Meta:
+        model  = FinancialAuditLog
+        fields = ['id', 'username', 'action', 'model_name', 'object_id', 'details', 'timestamp']

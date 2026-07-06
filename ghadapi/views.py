@@ -27,8 +27,17 @@ from reportlab.lib.utils import ImageReader
 import barcode
 from barcode.writer import ImageWriter
 from .serializers import MachineSerializer, MachineAssignmentSerializer
+import calendar
+from openpyxl import Workbook
+from django.http import HttpResponse
+
 
 from .models import (
+    FinancialCategory, 
+    Donation,
+    ExpenseTransaction,
+    FinancialSettings,
+    FinancialAuditLog,
     DonationHistory,
     Donor,
     Patient,
@@ -61,7 +70,12 @@ from .serializers import (
     DrugDonationSerializer,
     DrugDistributionSerializer,
     MachineSerializer,
-    MachineAssignmentSerializer
+    MachineAssignmentSerializer,
+    FinancialCategorySerializer, 
+    DonationSerializer,
+    ExpenseTransactionSerializer,
+    FinancialSettingsSerializer,
+    FinancialAuditLogSerializer,
 )
 
 from .permissions import (
@@ -1217,3 +1231,257 @@ class MachineAssignmentViewSet(viewsets.ModelViewSet):
         except ValidationError as e:
             return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(MachineAssignmentSerializer(assignment).data)
+    
+
+
+FINANCE_KEYWORDS = ['مالية', 'finance', 'مال', 'ميزانية']
+
+
+class FinancialCategoryViewSet(viewsets.ModelViewSet):
+    queryset           = FinancialCategory.objects.all()
+    serializer_class   = FinancialCategorySerializer
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = FINANCE_KEYWORDS
+
+
+class DonationViewSet(viewsets.ModelViewSet):
+    queryset            = Donation.objects.select_related('category', 'created_by').all()
+    serializer_class    = DonationSerializer
+    permission_classes  = [HasActivityAccess]
+    activity_keywords   = FINANCE_KEYWORDS
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        donor = self.request.query_params.get('donor')
+        category = self.request.query_params.get('category')
+        date_from = self.request.query_params.get('date_from')
+        date_to = self.request.query_params.get('date_to')
+        if donor:
+            qs = qs.filter(donor_name__icontains=donor)
+        if category:
+            qs = qs.filter(category_id=category)
+        if date_from:
+            qs = qs.filter(date__gte=date_from)
+        if date_to:
+            qs = qs.filter(date__lte=date_to)
+        return qs
+
+    def perform_destroy(self, instance):
+        from .models import log_finance_action
+        log_finance_action(self.request.user, 'delete', 'Donation', instance.id,
+                            f"{instance.donor_name} - {instance.amount} DZD")
+        instance.delete()
+
+    @action(detail=False, methods=['get'], url_path='donor-history/(?P<donor_name>[^/.]+)')
+    def donor_history(self, request, donor_name=None):
+        donations = Donation.objects.filter(donor_name__icontains=donor_name).select_related('category')
+        total = donations.aggregate(total=Sum('amount'))['total'] or 0
+        return Response({
+            'donor_name': donor_name,
+            'total_donated': total,
+            'donations': DonationSerializer(donations, many=True, context={'request': request}).data,
+        })
+
+
+class ExpenseTransactionViewSet(viewsets.ModelViewSet):
+    queryset            = ExpenseTransaction.objects.select_related('category', 'created_by', 'related_distribution').all()
+    serializer_class    = ExpenseTransactionSerializer
+    permission_classes  = [HasActivityAccess]
+    activity_keywords   = FINANCE_KEYWORDS
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        category = self.request.query_params.get('category')
+        date_from = self.request.query_params.get('date_from')
+        date_to = self.request.query_params.get('date_to')
+        if category:
+            qs = qs.filter(category_id=category)
+        if date_from:
+            qs = qs.filter(date__gte=date_from)
+        if date_to:
+            qs = qs.filter(date__lte=date_to)
+        return qs
+
+    def perform_destroy(self, instance):
+        from .models import log_finance_action
+        log_finance_action(self.request.user, 'delete', 'ExpenseTransaction', instance.id,
+                            f"{instance.amount} DZD - {instance.description}")
+        instance.delete()
+
+
+class FinancialDashboardView(APIView):
+    """GET /api/finance/dashboard/"""
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = FINANCE_KEYWORDS
+
+    def get(self, request):
+        total_donations = Donation.objects.aggregate(total=Sum('amount'))['total'] or 0
+        total_expenses  = ExpenseTransaction.objects.aggregate(total=Sum('amount'))['total'] or 0
+        balance = total_donations - total_expenses
+
+        today = date.today()
+        month_donations = Donation.objects.filter(
+            date__year=today.year, date__month=today.month
+        ).aggregate(total=Sum('amount'))['total'] or 0
+        month_expenses = ExpenseTransaction.objects.filter(
+            date__year=today.year, date__month=today.month
+        ).aggregate(total=Sum('amount'))['total'] or 0
+
+        settings_obj = FinancialSettings.get_solo()
+        low_budget = balance < settings_obj.low_budget_threshold
+
+        # spending by category (for pie chart)
+        by_category = list(
+            ExpenseTransaction.objects.values('category__name')
+            .annotate(total=Sum('amount'))
+            .order_by('-total')
+        )
+
+        return Response({
+            'balance': balance,
+            'total_donations': total_donations,
+            'total_expenses': total_expenses,
+            'month_donations': month_donations,
+            'month_expenses': month_expenses,
+            'low_budget_alert': low_budget,
+            'low_budget_threshold': settings_obj.low_budget_threshold,
+            'spending_by_category': by_category,
+        })
+
+    def patch(self, request):
+        """Update low_budget_threshold. Body: {threshold: number}"""
+        settings_obj = FinancialSettings.get_solo()
+        threshold = request.data.get('threshold')
+        if threshold is not None:
+            settings_obj.low_budget_threshold = threshold
+            settings_obj.save()
+        return Response(FinancialSettingsSerializer(settings_obj).data)
+
+
+class FinancialReportView(APIView):
+    """
+    GET /api/finance/reports/?period=month&year=2026&month=7&format=json|excel|pdf
+    GET /api/finance/reports/?period=year&year=2026&format=...
+    GET /api/finance/reports/?category=3&format=...
+    """
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = FINANCE_KEYWORDS
+
+    def get(self, request):
+        donations = Donation.objects.select_related('category').all()
+        expenses  = ExpenseTransaction.objects.select_related('category').all()
+
+        year = request.query_params.get('year')
+        month = request.query_params.get('month')
+        category = request.query_params.get('category')
+
+        if year:
+            donations = donations.filter(date__year=year)
+            expenses  = expenses.filter(date__year=year)
+        if month:
+            donations = donations.filter(date__month=month)
+            expenses  = expenses.filter(date__month=month)
+        if category:
+            donations = donations.filter(category_id=category)
+            expenses  = expenses.filter(category_id=category)
+
+        fmt = request.query_params.get('format', 'json')
+
+        if fmt == 'excel':
+            return self._export_excel(donations, expenses)
+        if fmt == 'pdf':
+            return self._export_pdf(donations, expenses, year, month)
+
+        total_donations = donations.aggregate(total=Sum('amount'))['total'] or 0
+        total_expenses  = expenses.aggregate(total=Sum('amount'))['total'] or 0
+        return Response({
+            'total_donations': total_donations,
+            'total_expenses': total_expenses,
+            'net': total_donations - total_expenses,
+            'donations': DonationSerializer(donations, many=True, context={'request': request}).data,
+            'expenses': ExpenseTransactionSerializer(expenses, many=True, context={'request': request}).data,
+        })
+
+    def _export_excel(self, donations, expenses):
+        wb = Workbook()
+        ws1 = wb.active
+        ws1.title = 'التبرعات'
+        ws1.append(['المتبرع', 'المبلغ', 'طريقة الدفع', 'الفئة', 'التاريخ', 'ملاحظات'])
+        for d in donations:
+            ws1.append([d.donor_name, float(d.amount), d.get_payment_method_display(),
+                        d.category.name, str(d.date), d.notes or ''])
+
+        ws2 = wb.create_sheet('المصروفات')
+        ws2.append(['المبلغ', 'الفئة', 'الوصف', 'التاريخ'])
+        for e in expenses:
+            ws2.append([float(e.amount), e.category.name, e.description, str(e.date)])
+
+        response = HttpResponse(
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = 'attachment; filename="financial_report.xlsx"'
+        wb.save(response)
+        return response
+
+    def _export_pdf(self, donations, expenses, year, month):
+        from io import BytesIO
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+
+        buffer = BytesIO()
+        p = canvas.Canvas(buffer, pagesize=A4)
+        width, height = A4
+        y = height - 50
+
+        p.setFont('Helvetica-Bold', 16)
+        p.drawString(50, y, 'Financial Report')
+        y -= 30
+        p.setFont('Helvetica', 11)
+
+        total_donations = sum(d.amount for d in donations)
+        total_expenses  = sum(e.amount for e in expenses)
+        p.drawString(50, y, f"Total Donations: {total_donations} DZD"); y -= 18
+        p.drawString(50, y, f"Total Expenses: {total_expenses} DZD"); y -= 18
+        p.drawString(50, y, f"Net: {total_donations - total_expenses} DZD"); y -= 30
+
+        p.setFont('Helvetica-Bold', 12)
+        p.drawString(50, y, 'Donations'); y -= 20
+        p.setFont('Helvetica', 9)
+        for d in donations:
+            if y < 50:
+                p.showPage(); y = height - 50
+            p.drawString(50, y, f"{d.date} | {d.donor_name} | {d.amount} DZD | {d.category.name}")
+            y -= 14
+
+        y -= 20
+        p.setFont('Helvetica-Bold', 12)
+        p.drawString(50, y, 'Expenses'); y -= 20
+        p.setFont('Helvetica', 9)
+        for e in expenses:
+            if y < 50:
+                p.showPage(); y = height - 50
+            p.drawString(50, y, f"{e.date} | {e.amount} DZD | {e.category.name} | {e.description[:40]}")
+            y -= 14
+
+        p.save()
+        buffer.seek(0)
+        response = HttpResponse(buffer, content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="financial_report.pdf"'
+        return response
+
+
+class FinancialAuditLogViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset           = FinancialAuditLog.objects.select_related('user').all()
+    serializer_class   = FinancialAuditLogSerializer
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = FINANCE_KEYWORDS

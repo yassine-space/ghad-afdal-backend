@@ -110,7 +110,9 @@ class Activity(models.Model):
     department  = models.ForeignKey(
         Department,
         on_delete=models.CASCADE,
-        related_name='activities'
+        related_name='activities',
+        blank=True,
+        null=True
     )
     name        = models.CharField(max_length=100)
     description = models.TextField(blank=True)
@@ -118,24 +120,6 @@ class Activity(models.Model):
     def __str__(self):
         return f"{self.name} ({self.department})"
 
-# class AssociationMembership(models.Model):
-#     person = models.OneToOneField(         
-#         Person,
-#         on_delete=models.CASCADE,
-#         related_name='association_membership'
-#     )
-#     status = models.CharField(
-#         max_length=20,
-#         choices=[('active', 'Active'), ('inactive', 'Inactive')],
-#         default='active'                     
-#     )
-#     join_date = models.DateField()
-#     public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
-#     photo = models.ImageField(upload_to='association_photos/', blank=True, null=True)
-#     description = models.TextField(blank=True, null=True)
-
-#     def __str__(self):
-#         return f"{self.person} — {self.status}"
 
 class Member(models.Model):
     """
@@ -608,3 +592,127 @@ def update_machine_status_on_assign(sender, instance, created, **kwargs):
     if created:
         instance.machine.status = 'assigned'
         instance.machine.save()
+
+
+# ─────────────────────────────────────────────
+# FINANCIAL MANAGEMENT
+# ─────────────────────────────────────────────
+
+class FinancialCategory(models.Model):
+    name = models.CharField(max_length=150, unique=True)
+
+    class Meta:
+        db_table = 'financial_category'
+        verbose_name_plural = 'Financial Categories'
+
+    def __str__(self):
+        return self.name
+
+
+class Donation(models.Model):
+    PAYMENT_METHODS = [
+        ('cash', 'Cash'),
+        ('bank', 'Bank Account'),
+    ]
+
+    donor_name     = models.CharField(max_length=255)
+    amount         = models.DecimalField(max_digits=12, decimal_places=2)
+    payment_method = models.CharField(max_length=10, choices=PAYMENT_METHODS, default='cash')
+    category       = models.ForeignKey(FinancialCategory, on_delete=models.PROTECT, related_name='donations')
+    date           = models.DateField()
+    notes          = models.TextField(blank=True, null=True)
+    receipt        = models.ImageField(upload_to='finance/donations/', blank=True, null=True)
+    created_by     = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='donations_recorded')
+    created_at     = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'finance_donation'
+        ordering = ['-date']
+
+    def __str__(self):
+        return f"{self.donor_name} - {self.amount} DZD ({self.date})"
+
+
+class ExpenseTransaction(models.Model):
+    amount              = models.DecimalField(max_digits=12, decimal_places=2)
+    category            = models.ForeignKey(FinancialCategory, on_delete=models.PROTECT, related_name='expenses')
+    description         = models.TextField()
+    date                = models.DateField()
+    receipt             = models.ImageField(upload_to='finance/expenses/', blank=True, null=True)
+    created_by          = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='expenses_recorded')
+    related_distribution = models.ForeignKey(
+        DrugDistribution, on_delete=models.SET_NULL, null=True, blank=True, related_name='finance_transaction'
+    )
+    created_at          = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'finance_expense'
+        ordering = ['-date']
+
+    def __str__(self):
+        return f"{self.amount} DZD - {self.category} ({self.date})"
+
+
+class FinancialSettings(models.Model):
+    """
+    Singleton row holding org-wide finance settings (low-budget alert threshold).
+    Use FinancialSettings.get_solo() to fetch/create it.
+    """
+    low_budget_threshold = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    class Meta:
+        db_table = 'finance_settings'
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return f"Financial Settings (threshold: {self.low_budget_threshold} DZD)"
+
+
+class FinancialAuditLog(models.Model):
+    ACTIONS = [('create', 'Create'), ('update', 'Update'), ('delete', 'Delete')]
+
+    user       = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    action     = models.CharField(max_length=10, choices=ACTIONS)
+    model_name = models.CharField(max_length=50)   # 'Donation' | 'ExpenseTransaction' | 'FinancialCategory'
+    object_id  = models.IntegerField()
+    details    = models.TextField(blank=True)
+    timestamp  = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'finance_audit_log'
+        ordering = ['-timestamp']
+
+    def __str__(self):
+        return f"{self.user} {self.action} {self.model_name}#{self.object_id} @ {self.timestamp}"
+
+
+def log_finance_action(user, action, model_name, object_id, details=''):
+    FinancialAuditLog.objects.create(
+        user=user, action=action, model_name=model_name,
+        object_id=object_id, details=details
+    )
+
+
+# NOTE: DrugDistribution currently has no monetary value field, so the
+# auto-created expense below uses amount=0 as a placeholder — staff must
+# edit the transaction afterward to fill in the real cost. If you'd like,
+# I can add a `total_cost` field to DrugDistribution/DistributionItem instead
+# so this is computed automatically from drug prices.
+@receiver(post_save, sender=DrugDistribution)
+def create_expense_from_distribution(sender, instance, created, **kwargs):
+    if created:
+        try:
+            category, _ = FinancialCategory.objects.get_or_create(name='توزيع أدوية')
+            ExpenseTransaction.objects.create(
+                amount=0,
+                category=category,
+                description=f"توزيع دواء تلقائي #{instance.id} → {instance.beneficiary}",
+                date=instance.distribution_date,
+                related_distribution=instance,
+            )
+        except Exception:
+            pass  # never block distribution creation on finance bookkeeping
