@@ -520,7 +520,7 @@ class Machine(models.Model):
     acquisition_date = models.DateField(null=True, blank=True)
     class Meta:
         db_table = 'medical_machine'
-        ordering = ['acquisition_date']
+        ordering = ['id']
     def save(self, *args, **kwargs):
         if self.pk is None:
             super().save(*args, **kwargs)
