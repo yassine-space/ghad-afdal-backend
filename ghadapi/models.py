@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError
 from django.contrib.auth.models import AbstractUser
 from datetime import date, timedelta
 from django.utils import timezone
-
+import unicodedata
 class User(AbstractUser):
     """
     Custom User model replacing Django's default.
@@ -520,28 +520,30 @@ class Machine(models.Model):
     acquisition_date = models.DateField(null=True, blank=True)
     class Meta:
         db_table = 'medical_machine'
-
+        ordering = ['acquisition_date']
     def save(self, *args, **kwargs):
-        # First save to obtain the ID
         if self.pk is None:
             super().save(*args, **kwargs)
-
-        # Generate the barcode only if it doesn't already exist
+    
         if not self.bar_code:
             words = self.name.strip().split()
             if len(words) == 1:
                 prefix = words[0][:3].upper()
             else:
                 prefix = "".join(word[0].upper() for word in words)
+    
+            prefix = unicodedata.normalize('NFKD', prefix).encode('ascii', 'ignore').decode('ascii')
+            prefix = ''.join(ch for ch in prefix if ch.isalnum())
+    
+            if not prefix:
+                prefix = 'MC'  # fallback when name is fully non-Latin (e.g. Arabic)
+    
             self.bar_code = f"M-{prefix}{self.id}"
-
-            # Save only the barcode field
             super().save(update_fields=["bar_code"])
-
         else:
             super().save(*args, **kwargs)
-
     def __str__(self):
+
         return f"{self.name} ({self.bar_code}) - {self.status}"
 
 class MachineAssignment(models.Model):
