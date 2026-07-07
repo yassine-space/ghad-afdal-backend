@@ -1123,7 +1123,7 @@ class MachineAssignmentViewSet(viewsets.ModelViewSet):
         bar_code = self._normalize_bar_code(request.data.get('bar_code'))
         assigned_to = request.data.get('assigned_to')
         description = request.data.get('description', '')
-
+        assigned_at_raw = request.data.get('assigned_at')
         if not bar_code or not assigned_to:
             return Response(
                 {'detail': 'bar_code و assigned_to مطلوبان.'},
@@ -1142,12 +1142,15 @@ class MachineAssignmentViewSet(viewsets.ModelViewSet):
                 {'detail': 'هذا الجهاز غير متاح حالياً للإسناد.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        serializer = self.get_serializer(data={
+        data={
             'machine': machine.id,
             'assigned_to': assigned_to,
             'description': description,
-        })
+        }
+        if assigned_at_raw:  # NEW — only include if user supplied one
+          data['assigned_at'] = assigned_at_raw
+
+        serializer = self.get_serializer(data)
         serializer.is_valid(raise_exception=True)
         assignment = serializer.save()
         return Response(

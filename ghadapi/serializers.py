@@ -391,7 +391,7 @@ class MachineAssignmentSerializer(serializers.ModelSerializer):
             'assigned_at', 'returned_at', 'is_returned',
             'description',
         ]
-        read_only_fields = ['assigned_at', 'returned_at']
+        read_only_fields = ['returned_at']
 
     def get_person_name(self, obj):
         return f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}"

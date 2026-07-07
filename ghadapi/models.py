@@ -549,7 +549,7 @@ class Machine(models.Model):
 class MachineAssignment(models.Model):
     machine     = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='assignments')
     assigned_to = models.ForeignKey(Person,  on_delete=models.CASCADE, related_name='machine_assignments')
-    assigned_at = models.DateTimeField(auto_now_add=True)
+    assigned_at = models.DateTimeField(default=timezone.now)
     returned_at = models.DateTimeField(blank=True, null=True)
     description = models.TextField(blank=True, null=True)
 
