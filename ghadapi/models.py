@@ -601,7 +601,8 @@ def update_machine_status_on_assign(sender, instance, created, **kwargs):
 # ─────────────────────────────────────────────
 
 class FinancialCategory(models.Model):
-    name = models.CharField(max_length=150, unique=True)
+    name      = models.CharField(max_length=150, unique=True)
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'financial_category'
@@ -609,8 +610,7 @@ class FinancialCategory(models.Model):
 
     def __str__(self):
         return self.name
-
-
+    
 class Donation(models.Model):
     PAYMENT_METHODS = [
         ('cash', 'Cash'),
@@ -623,7 +623,6 @@ class Donation(models.Model):
     category       = models.ForeignKey(FinancialCategory, on_delete=models.PROTECT, related_name='donations')
     date           = models.DateField()
     notes          = models.TextField(blank=True, null=True)
-    receipt        = models.ImageField(upload_to='finance/donations/', blank=True, null=True)
     created_by     = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='donations_recorded')
     created_at     = models.DateTimeField(auto_now_add=True)
 
@@ -636,16 +635,15 @@ class Donation(models.Model):
 
 
 class ExpenseTransaction(models.Model):
-    amount              = models.DecimalField(max_digits=12, decimal_places=2)
-    category            = models.ForeignKey(FinancialCategory, on_delete=models.PROTECT, related_name='expenses')
-    description         = models.TextField()
-    date                = models.DateField()
-    receipt             = models.ImageField(upload_to='finance/expenses/', blank=True, null=True)
-    created_by          = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='expenses_recorded')
-    related_distribution = models.ForeignKey(
-        DrugDistribution, on_delete=models.SET_NULL, null=True, blank=True, related_name='finance_transaction'
+    amount               = models.DecimalField(max_digits=12, decimal_places=2)
+    category             = models.ForeignKey(FinancialCategory, on_delete=models.PROTECT, related_name='expenses')
+    description          = models.TextField()
+    date                 = models.DateField()
+    created_by           = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='expenses_recorded')
+    related_donation     = models.ForeignKey(
+        DrugDonation, on_delete=models.SET_NULL, null=True, blank=True, related_name='finance_transaction'
     )
-    created_at          = models.DateTimeField(auto_now_add=True)
+    created_at           = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'finance_expense'
@@ -655,31 +653,12 @@ class ExpenseTransaction(models.Model):
         return f"{self.amount} DZD - {self.category} ({self.date})"
 
 
-class FinancialSettings(models.Model):
-    """
-    Singleton row holding org-wide finance settings (low-budget alert threshold).
-    Use FinancialSettings.get_solo() to fetch/create it.
-    """
-    low_budget_threshold = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-
-    class Meta:
-        db_table = 'finance_settings'
-
-    @classmethod
-    def get_solo(cls):
-        obj, _ = cls.objects.get_or_create(pk=1)
-        return obj
-
-    def __str__(self):
-        return f"Financial Settings (threshold: {self.low_budget_threshold} DZD)"
-
-
 class FinancialAuditLog(models.Model):
     ACTIONS = [('create', 'Create'), ('update', 'Update'), ('delete', 'Delete')]
 
     user       = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     action     = models.CharField(max_length=10, choices=ACTIONS)
-    model_name = models.CharField(max_length=50)   # 'Donation' | 'ExpenseTransaction' | 'FinancialCategory'
+    model_name = models.CharField(max_length=50)
     object_id  = models.IntegerField()
     details    = models.TextField(blank=True)
     timestamp  = models.DateTimeField(auto_now_add=True)
@@ -699,22 +678,20 @@ def log_finance_action(user, action, model_name, object_id, details=''):
     )
 
 
-# NOTE: DrugDistribution currently has no monetary value field, so the
-# auto-created expense below uses amount=0 as a placeholder — staff must
-# edit the transaction afterward to fill in the real cost. If you'd like,
-# I can add a `total_cost` field to DrugDistribution/DistributionItem instead
-# so this is computed automatically from drug prices.
-@receiver(post_save, sender=DrugDistribution)
-def create_expense_from_distribution(sender, instance, created, **kwargs):
-    if created:
+# Replaces the old DrugDistribution-based signal.
+# Whenever a DrugDonation is recorded as an "invoice" (i.e. the org paid for it),
+# automatically log it as an expense using the donation's total_price.
+@receiver(post_save, sender=DrugDonation)
+def create_expense_from_invoice_donation(sender, instance, created, **kwargs):
+    if created and instance.donation_type == 'invoice':
         try:
-            category, _ = FinancialCategory.objects.get_or_create(name='توزيع أدوية')
+            category, _ = FinancialCategory.objects.get_or_create(name='فواتير الأدوية')
             ExpenseTransaction.objects.create(
-                amount=0,
+                amount=instance.total_price,
                 category=category,
-                description=f"توزيع دواء تلقائي #{instance.id} → {instance.beneficiary}",
-                date=instance.distribution_date,
-                related_distribution=instance,
+                description=f"فاتورة دواء تلقائية #{instance.id} - المورد: {instance.donor}",
+                date=instance.donation_date,
+                related_donation=instance,
             )
         except Exception:
-            pass  # never block distribution creation on finance bookkeeping
+            pass  # never block donation creation on finance bookkeeping

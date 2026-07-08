@@ -36,7 +36,6 @@ from .models import (
     FinancialCategory, 
     Donation,
     ExpenseTransaction,
-    FinancialSettings,
     FinancialAuditLog,
     DonationHistory,
     Donor,
@@ -74,9 +73,8 @@ from .serializers import (
     FinancialCategorySerializer, 
     DonationSerializer,
     ExpenseTransactionSerializer,
-    FinancialSettingsSerializer,
     FinancialAuditLogSerializer,
-)
+    )
 
 from .permissions import (
     HasActivityAccess,
@@ -1241,10 +1239,22 @@ FINANCE_KEYWORDS = ['مالية', 'finance', 'مال', 'ميزانية']
 
 
 class FinancialCategoryViewSet(viewsets.ModelViewSet):
+    """
+    GET /api/finance/categories/             → all categories (management page)
+    GET /api/finance/categories/?active=true → active categories only (dashboard)
+    """
     queryset           = FinancialCategory.objects.all()
     serializer_class   = FinancialCategorySerializer
     permission_classes = [HasActivityAccess]
     activity_keywords  = FINANCE_KEYWORDS
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        active = self.request.query_params.get('active')
+        if active is not None:
+            active_bool = str(active).lower() in ('1', 'true', 'yes')
+            qs = qs.filter(is_active=active_bool)
+        return qs.order_by('-is_active', 'name')
 
 
 class DonationViewSet(viewsets.ModelViewSet):
@@ -1280,19 +1290,37 @@ class DonationViewSet(viewsets.ModelViewSet):
                             f"{instance.donor_name} - {instance.amount} DZD")
         instance.delete()
 
-    @action(detail=False, methods=['get'], url_path='donor-history/(?P<donor_name>[^/.]+)')
-    def donor_history(self, request, donor_name=None):
-        donations = Donation.objects.filter(donor_name__icontains=donor_name).select_related('category')
-        total = donations.aggregate(total=Sum('amount'))['total'] or 0
-        return Response({
-            'donor_name': donor_name,
-            'total_donated': total,
-            'donations': DonationSerializer(donations, many=True, context={'request': request}).data,
-        })
+    @action(detail=False, methods=['post'], url_path='print-receipts')
+    def print_receipts(self, request):
+        """
+        POST /api/finance/donations/print-receipts/
+        Body: { "ids": [1, 2, 3, ...] }
+        Returns a multi-page PDF with 4 donation receipts per A4 page (2x2 grid),
+        same pattern as MachineViewSet.print_barcodes.
+        """
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response({'detail': 'No donations selected.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        donations = Donation.objects.filter(id__in=ids).select_related('category')
+        if not donations.exists():
+            return Response({'detail': 'No valid donations found for the provided IDs.'},
+                             status=status.HTTP_404_NOT_FOUND)
+
+        found_ids = set(donations.values_list('id', flat=True))
+        missing_ids = [str(i) for i in ids if int(i) not in found_ids]
+
+        items = [
+            _donation_receipt_item(d) for d in donations
+        ]
+        response = generate_receipts_pdf(items, filename='donation_receipts.pdf')
+        if missing_ids:
+            response['X-Missing-Ids'] = ','.join(missing_ids)
+        return response
 
 
 class ExpenseTransactionViewSet(viewsets.ModelViewSet):
-    queryset            = ExpenseTransaction.objects.select_related('category', 'created_by', 'related_distribution').all()
+    queryset            = ExpenseTransaction.objects.select_related('category', 'created_by', 'related_donation').all()
     serializer_class    = ExpenseTransactionSerializer
     permission_classes  = [HasActivityAccess]
     activity_keywords   = FINANCE_KEYWORDS
@@ -1321,6 +1349,31 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
                             f"{instance.amount} DZD - {instance.description}")
         instance.delete()
 
+    @action(detail=False, methods=['post'], url_path='print-receipts')
+    def print_receipts(self, request):
+        """
+        POST /api/finance/expenses/print-receipts/
+        Body: { "ids": [1, 2, 3, ...] }
+        Returns a multi-page PDF with 4 expense receipts per A4 page (2x2 grid).
+        """
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response({'detail': 'No expenses selected.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        expenses = ExpenseTransaction.objects.filter(id__in=ids).select_related('category')
+        if not expenses.exists():
+            return Response({'detail': 'No valid expenses found for the provided IDs.'},
+                             status=status.HTTP_404_NOT_FOUND)
+
+        found_ids = set(expenses.values_list('id', flat=True))
+        missing_ids = [str(i) for i in ids if int(i) not in found_ids]
+
+        items = [_expense_receipt_item(e) for e in expenses]
+        response = generate_receipts_pdf(items, filename='expense_receipts.pdf')
+        if missing_ids:
+            response['X-Missing-Ids'] = ','.join(missing_ids)
+        return response
+
 
 class FinancialDashboardView(APIView):
     """GET /api/finance/dashboard/"""
@@ -1340,12 +1393,12 @@ class FinancialDashboardView(APIView):
             date__year=today.year, date__month=today.month
         ).aggregate(total=Sum('amount'))['total'] or 0
 
-        settings_obj = FinancialSettings.get_solo()
-        low_budget = balance < settings_obj.low_budget_threshold
-
-        # spending by category (for pie chart)
+        # Only active categories are surfaced on the dashboard. Inactive
+        # categories stay visible/manageable on the Categories page but are
+        # excluded here per the "Active Categories on Dashboard" requirement.
         by_category = list(
-            ExpenseTransaction.objects.values('category__name')
+            ExpenseTransaction.objects.filter(category__is_active=True)
+            .values('category__name')
             .annotate(total=Sum('amount'))
             .order_by('-total')
         )
@@ -1356,26 +1409,61 @@ class FinancialDashboardView(APIView):
             'total_expenses': total_expenses,
             'month_donations': month_donations,
             'month_expenses': month_expenses,
-            'low_budget_alert': low_budget,
-            'low_budget_threshold': settings_obj.low_budget_threshold,
             'spending_by_category': by_category,
         })
-
-    def patch(self, request):
-        """Update low_budget_threshold. Body: {threshold: number}"""
-        settings_obj = FinancialSettings.get_solo()
-        threshold = request.data.get('threshold')
-        if threshold is not None:
-            settings_obj.low_budget_threshold = threshold
-            settings_obj.save()
-        return Response(FinancialSettingsSerializer(settings_obj).data)
+    # PATCH method removed entirely — no more threshold setting
 
 
+def _donation_receipt_item(donation):
+    return dict(
+        title='إيصال تبرع',
+        name_label='المتبرع', name_value=donation.donor_name,
+        amount=donation.amount,
+        date_value=donation.date,
+        extra_label='الفئة', extra_value=donation.category.name,
+        method_label='طريقة الدفع',
+        method_value='نقداً' if donation.payment_method == 'cash' else 'حساب بنكي',
+        ref=f"D-{donation.id:06d}",
+    )
+
+
+def _expense_receipt_item(expense):
+    return dict(
+        title='إيصال مصروف',
+        name_label='الوصف', name_value=expense.description,
+        amount=expense.amount,
+        date_value=expense.date,
+        extra_label='الفئة', extra_value=expense.category.name,
+        method_label=None, method_value=None,
+        ref=f"E-{expense.id:06d}",
+    )
+
+
+class DonationReceiptView(APIView):
+    """
+    GET /api/finance/donations/{id}/receipt/
+    Generates an A4 PDF laid out with the 4-up receipt grid (see
+    generate_receipts_pdf), with this single receipt in the first cell.
+    """
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = FINANCE_KEYWORDS
+
+    def get(self, request, pk):
+        donation = get_object_or_404(Donation, pk=pk)
+        return generate_receipts_pdf([_donation_receipt_item(donation)], filename='donation_receipt.pdf')
+
+
+class ExpenseReceiptView(APIView):
+    """GET /api/finance/expenses/{id}/receipt/"""
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = FINANCE_KEYWORDS
+
+    def get(self, request, pk):
+        expense = get_object_or_404(ExpenseTransaction, pk=pk)
+        return generate_receipts_pdf([_expense_receipt_item(expense)], filename='expense_receipt.pdf')
 class FinancialReportView(APIView):
     """
-    GET /api/finance/reports/?period=month&year=2026&month=7&format=json|excel|pdf
-    GET /api/finance/reports/?period=year&year=2026&format=...
-    GET /api/finance/reports/?category=3&format=...
+    GET /api/finance/reports/?year=2026&month=7&category=3&format=json|excel|pdf
     """
     permission_classes = [HasActivityAccess]
     activity_keywords  = FINANCE_KEYWORDS
@@ -1398,12 +1486,16 @@ class FinancialReportView(APIView):
             donations = donations.filter(category_id=category)
             expenses  = expenses.filter(category_id=category)
 
-        fmt = request.query_params.get('format', 'json')
+        fmt = request.query_params.get('export_format', 'json')
+
+        category_obj = None
+        if category:
+            category_obj = FinancialCategory.objects.filter(id=category).first()
 
         if fmt == 'excel':
-            return self._export_excel(donations, expenses)
+            return self._export_excel(donations, expenses, year, month, category_obj)
         if fmt == 'pdf':
-            return self._export_pdf(donations, expenses, year, month)
+            return self._export_pdf(donations, expenses, year, month, category_obj)
 
         total_donations = donations.aggregate(total=Sum('amount'))['total'] or 0
         total_expenses  = expenses.aggregate(total=Sum('amount'))['total'] or 0
@@ -1415,19 +1507,99 @@ class FinancialReportView(APIView):
             'expenses': ExpenseTransactionSerializer(expenses, many=True, context={'request': request}).data,
         })
 
-    def _export_excel(self, donations, expenses):
+    def _report_meta(self, donations, expenses, year, month, category_obj):
+        if category_obj:
+            categories_label = category_obj.name
+        else:
+            names = sorted(set(
+                list(donations.values_list('category__name', flat=True)) +
+                list(expenses.values_list('category__name', flat=True))
+            ))
+            categories_label = '، '.join(names) if names else 'كل الفئات'
+
+        MONTH_NAMES_AR = ['', 'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+                          'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
+        period_bits = []
+        if year:
+            period_bits.append(str(year))
+        if month:
+            try:
+                period_bits.append(MONTH_NAMES_AR[int(month)])
+            except (ValueError, IndexError):
+                period_bits.append(str(month))
+        period_label = ' - '.join(period_bits) if period_bits else 'كل الفترات'
+
+        return {
+            'title': 'التقرير المالي',
+            'description': 'تقرير مالي شامل يوضح التبرعات والمصروفات المسجلة لدى الجمعية خلال الفترة المحددة.',
+            'generated_at': timezone.now().strftime('%Y-%m-%d %H:%M'),
+            'year': str(year) if year else 'كل السنوات',
+            'period': period_label,
+            'categories': categories_label,
+        }
+
+    def _export_excel(self, donations, expenses, year=None, month=None, category_obj=None):
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        meta = self._report_meta(donations, expenses, year, month, category_obj)
+        header_fill = PatternFill(start_color='14B8A6', end_color='14B8A6', fill_type='solid')
+        header_font = Font(bold=True, color='FFFFFF')
+        title_font = Font(bold=True, size=14)
+
         wb = Workbook()
-        ws1 = wb.active
-        ws1.title = 'التبرعات'
-        ws1.append(['المتبرع', 'المبلغ', 'طريقة الدفع', 'الفئة', 'التاريخ', 'ملاحظات'])
+
+        # ── Summary sheet ────────────────────────────────────────────────
+        total_donations = sum(float(d.amount) for d in donations)
+        total_expenses  = sum(float(e.amount) for e in expenses)
+        ws0 = wb.active
+        ws0.title = 'ملخص'
+        ws0['A1'] = ORG_NAME
+        ws0['A1'].font = title_font
+        ws0['A2'] = meta['title']
+        ws0['A2'].font = Font(bold=True, size=12)
+        ws0['A3'] = f"تاريخ الإصدار: {meta['generated_at']}"
+        ws0['A4'] = f"الفترة: {meta['period']}"
+        ws0['A5'] = f"الفئات: {meta['categories']}"
+        ws0['A7'] = 'إجمالي التبرعات'
+        ws0['B7'] = total_donations
+        ws0['A8'] = 'إجمالي المصروفات'
+        ws0['B8'] = total_expenses
+        ws0['A9'] = 'الصافي'
+        ws0['B9'] = total_donations - total_expenses
+        for r in (7, 8, 9):
+            ws0[f'A{r}'].font = Font(bold=True)
+        ws0.column_dimensions['A'].width = 28
+        ws0.column_dimensions['B'].width = 18
+
+        # ── Donations sheet ──────────────────────────────────────────────
+        ws1 = wb.create_sheet('التبرعات')
+        headers1 = ['المتبرع', 'المبلغ', 'طريقة الدفع', 'الفئة', 'التاريخ', 'ملاحظات']
+        ws1.append(headers1)
+        for cell in ws1[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
         for d in donations:
             ws1.append([d.donor_name, float(d.amount), d.get_payment_method_display(),
                         d.category.name, str(d.date), d.notes or ''])
+        for i, w in enumerate([22, 14, 16, 20, 14, 30], start=1):
+            ws1.column_dimensions[get_column_letter(i)].width = w
+        ws1.freeze_panes = 'A2'
 
+        # ── Expenses sheet ───────────────────────────────────────────────
         ws2 = wb.create_sheet('المصروفات')
-        ws2.append(['المبلغ', 'الفئة', 'الوصف', 'التاريخ'])
+        headers2 = ['المبلغ', 'الفئة', 'الوصف', 'التاريخ']
+        ws2.append(headers2)
+        for cell in ws2[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
         for e in expenses:
             ws2.append([float(e.amount), e.category.name, e.description, str(e.date)])
+        for i, w in enumerate([14, 20, 40, 14], start=1):
+            ws2.column_dimensions[get_column_letter(i)].width = w
+        ws2.freeze_panes = 'A2'
 
         response = HttpResponse(
             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -1436,47 +1608,173 @@ class FinancialReportView(APIView):
         wb.save(response)
         return response
 
-    def _export_pdf(self, donations, expenses, year, month):
-        from io import BytesIO
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen import canvas
+    def _export_pdf(self, donations, expenses, year=None, month=None, category_obj=None):
+        width, height = A4
+        margin = 2 * cm
+        arabic_font = _get_arabic_font()
+        rs = _get_reshaper()
+        logo_path = _find_logo_path()
+        meta = self._report_meta(donations, expenses, year, month, category_obj)
 
         buffer = BytesIO()
-        p = canvas.Canvas(buffer, pagesize=A4)
-        width, height = A4
-        y = height - 50
+        c = canvas.Canvas(buffer, pagesize=A4)
+        page_num = [1]
 
-        p.setFont('Helvetica-Bold', 16)
-        p.drawString(50, y, 'Financial Report')
-        y -= 30
-        p.setFont('Helvetica', 11)
+        def draw_footer():
+            c.setFont(arabic_font, 8)
+            c.setFillColorRGB(0.45, 0.45, 0.45)
+            c.drawCentredString(width / 2, 1 * cm, rs(ORG_NAME))
+            c.drawRightString(width - margin, 1 * cm, rs(f"صفحة {page_num[0]}"))
+            c.setFillColorRGB(0, 0, 0)
 
+        def draw_header(is_first_page):
+            y = height - margin
+            if is_first_page and logo_path:
+                try:
+                    logo_w = logo_h = 2 * cm
+                    logo = ImageReader(logo_path)
+                    c.drawImage(logo, width / 2 - logo_w / 2, y - logo_h,
+                                width=logo_w, height=logo_h, mask='auto', preserveAspectRatio=True)
+                except Exception:
+                    pass
+                y -= logo_h + 0.3 * cm
+
+            c.setFont(arabic_font, 15)
+            c.drawCentredString(width / 2, y, rs(ORG_NAME)); y -= 0.65 * cm
+            c.setFont(arabic_font, 13)
+            c.drawCentredString(width / 2, y, rs(meta['title'])); y -= 0.55 * cm
+
+            if is_first_page:
+                c.setFont(arabic_font, 8.5)
+                c.drawCentredString(width / 2, y, rs(meta['description'])); y -= 0.55 * cm
+
+                c.setLineWidth(0.8)
+                c.setStrokeColorRGB(0.75, 0.75, 0.75)
+                c.line(margin, y, width - margin, y); y -= 0.5 * cm
+
+                c.setFont(arabic_font, 9)
+                for line in (
+                    f"تاريخ الإصدار: {meta['generated_at']}",
+                    f"الفترة المشمولة: {meta['period']}",
+                    f"الفئات المشمولة: {meta['categories']}",
+                ):
+                    c.drawRightString(width - margin, y, rs(line))
+                    y -= 0.45 * cm
+            else:
+                c.setLineWidth(0.8)
+                c.setStrokeColorRGB(0.75, 0.75, 0.75)
+                c.line(margin, y, width - margin, y); y -= 0.4 * cm
+
+            return y - 0.2 * cm
+
+        def new_page(is_first=False):
+            if not is_first:
+                draw_footer()
+                c.showPage()
+                page_num[0] += 1
+            return draw_header(is_first)
+
+        def ensure_space(y, needed):
+            if y - needed < margin + 1 * cm:
+                return new_page(False)
+            return y
+
+        y = new_page(is_first=True)
+
+        # ── Summary stat boxes ───────────────────────────────────────────
         total_donations = sum(d.amount for d in donations)
         total_expenses  = sum(e.amount for e in expenses)
-        p.drawString(50, y, f"Total Donations: {total_donations} DZD"); y -= 18
-        p.drawString(50, y, f"Total Expenses: {total_expenses} DZD"); y -= 18
-        p.drawString(50, y, f"Net: {total_donations - total_expenses} DZD"); y -= 30
+        net = total_donations - total_expenses
+        stats = [
+            ('إجمالي التبرعات', f"{total_donations} د.ج"),
+            ('إجمالي المصروفات', f"{total_expenses} د.ج"),
+            ('الصافي', f"{net} د.ج"),
+        ]
+        gap = 0.4 * cm
+        box_w = (width - 2 * margin - 2 * gap) / 3
+        box_h = 1.6 * cm
+        y -= box_h
+        for i, (label, val) in enumerate(stats):
+            bx = margin + i * (box_w + gap)
+            c.setStrokeColorRGB(0.7, 0.7, 0.7)
+            c.setLineWidth(0.8)
+            c.roundRect(bx, y, box_w, box_h, 4, stroke=1, fill=0)
+            c.setFont(arabic_font, 9)
+            c.drawCentredString(bx + box_w / 2, y + box_h - 0.55 * cm, rs(label))
+            c.setFont(arabic_font, 12)
+            c.drawCentredString(bx + box_w / 2, y + 0.45 * cm, rs(val))
+        y -= 0.7 * cm
 
-        p.setFont('Helvetica-Bold', 12)
-        p.drawString(50, y, 'Donations'); y -= 20
-        p.setFont('Helvetica', 9)
-        for d in donations:
-            if y < 50:
-                p.showPage(); y = height - 50
-            p.drawString(50, y, f"{d.date} | {d.donor_name} | {d.amount} DZD | {d.category.name}")
-            y -= 14
+        # ── Table drawing helper ─────────────────────────────────────────
+        def draw_table(section_title, headers, col_widths, rows):
+            nonlocal y
+            y = ensure_space(y, 1.2 * cm)
+            c.setFont(arabic_font, 11.5)
+            c.drawRightString(width - margin, y, rs(section_title))
+            y -= 0.5 * cm
 
-        y -= 20
-        p.setFont('Helvetica-Bold', 12)
-        p.drawString(50, y, 'Expenses'); y -= 20
-        p.setFont('Helvetica', 9)
-        for e in expenses:
-            if y < 50:
-                p.showPage(); y = height - 50
-            p.drawString(50, y, f"{e.date} | {e.amount} DZD | {e.category.name} | {e.description[:40]}")
-            y -= 14
+            row_h = 0.55 * cm
+            table_w = sum(col_widths)
+            x_start = width - margin - table_w
 
-        p.save()
+            def draw_header_row():
+                nonlocal y
+                c.setFillColorRGB(0.078, 0.722, 0.651)  # teal, matches app branding
+                c.rect(x_start, y - row_h, table_w, row_h, stroke=0, fill=1)
+                c.setFillColorRGB(1, 1, 1)
+                c.setFont(arabic_font, 9)
+                cx = width - margin
+                for h, w in zip(headers, col_widths):
+                    c.drawCentredString(cx - w / 2, y - row_h + 0.16 * cm, rs(h))
+                    cx -= w
+                c.setFillColorRGB(0, 0, 0)
+                y -= row_h
+
+            draw_header_row()
+            c.setFont(arabic_font, 8.5)
+            for ridx, row in enumerate(rows):
+                if y - row_h < margin + 1 * cm:
+                    y = new_page(False)
+                    y = ensure_space(y, row_h)
+                    draw_header_row()
+                if ridx % 2 == 0:
+                    c.setFillColorRGB(0.95, 0.97, 0.97)
+                    c.rect(x_start, y - row_h, table_w, row_h, stroke=0, fill=1)
+                    c.setFillColorRGB(0, 0, 0)
+                cx = width - margin
+                for val, w in zip(row, col_widths):
+                    c.drawCentredString(cx - w / 2, y - row_h + 0.16 * cm, rs(str(val)))
+                    cx -= w
+                c.setStrokeColorRGB(0.85, 0.85, 0.85)
+                c.setLineWidth(0.4)
+                c.line(x_start, y - row_h, x_start + table_w, y - row_h)
+                y -= row_h
+
+            c.setStrokeColorRGB(0.6, 0.6, 0.6)
+            c.setLineWidth(0.8)
+            c.rect(x_start, y, table_w, (len(rows) + 1) * row_h, stroke=1, fill=0)
+            y -= 0.6 * cm
+
+        donation_widths = [3.4 * cm, 2.6 * cm, 2.6 * cm, 3.4 * cm, 2.6 * cm]
+        draw_table(
+            'سجل التبرعات',
+            ['المتبرع', 'المبلغ (د.ج)', 'طريقة الدفع', 'الفئة', 'التاريخ'],
+            donation_widths,
+            [[d.donor_name, d.amount, d.get_payment_method_display(), d.category.name, str(d.date)]
+             for d in donations] or [['—', '—', '—', '—', '—']],
+        )
+
+        expense_widths = [2.8 * cm, 3.2 * cm, 5.6 * cm, 2.8 * cm]
+        draw_table(
+            'سجل المصروفات',
+            ['المبلغ (د.ج)', 'الفئة', 'الوصف', 'التاريخ'],
+            expense_widths,
+            [[e.amount, e.category.name, e.description[:40], str(e.date)]
+             for e in expenses] or [['—', '—', '—', '—']],
+        )
+
+        draw_footer()
+        c.save()
         buffer.seek(0)
         response = HttpResponse(buffer, content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="financial_report.pdf"'
@@ -1488,3 +1786,151 @@ class FinancialAuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class   = FinancialAuditLogSerializer
     permission_classes = [HasActivityAccess]
     activity_keywords  = FINANCE_KEYWORDS
+
+ORG_NAME = 'جمعية الغد الأفضل'
+
+
+def _find_logo_path():
+    for rel in [('static', 'images', 'logo.jpg'), ('static', 'images', 'logo.png'),
+                ('static', 'img', 'logo.jpg'), ('static', 'img', 'logo.png')]:
+        p = os.path.join(settings.BASE_DIR, *rel)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _get_arabic_font():
+    arabic_font = 'Helvetica'
+    try:
+        possible_font_paths = [
+            os.path.join(settings.BASE_DIR, 'static', 'fonts', 'Amiri-Regular.ttf'),
+            os.path.join(settings.BASE_DIR, 'static', 'fonts', 'NotoSansArabic-Regular.ttf'),
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+        ]
+        for fp in possible_font_paths:
+            if os.path.exists(fp):
+                pdfmetrics.registerFont(TTFont('ArabicFont', fp))
+                arabic_font = 'ArabicFont'
+                break
+    except Exception:
+        pass
+    return arabic_font
+
+
+def _get_reshaper():
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        return lambda t: get_display(arabic_reshaper.reshape(str(t)))
+    except ImportError:
+        return lambda t: str(t)
+
+
+def _draw_receipt_cell(c, x, y, w, h, item, rs, arabic_font, logo_path):
+    """
+    Draws a single receipt inside the cell rectangle whose bottom-left
+    corner is (x, y) and whose size is (w, h). Used both for a single
+    receipt (called once, in the first cell of an A4 sheet) and for the
+    4-up bulk-print layout (called up to 4 times per page).
+    """
+    pad = 0.25 * cm
+
+    # Receipt border, inset from the cell's cut-line boundary
+    c.setStrokeColorRGB(0.15, 0.15, 0.15)
+    c.setLineWidth(1)
+    c.rect(x + pad, y + pad, w - 2 * pad, h - 2 * pad, stroke=1, fill=0)
+
+    inner_right = x + w - pad - 0.4 * cm
+    top_y = y + h - pad - 0.5 * cm
+
+    # Small logo, top-right of the cell
+    if logo_path:
+        try:
+            logo_w = logo_h = min(1.6 * cm, h * 0.22)
+            logo = ImageReader(logo_path)
+            c.drawImage(logo, inner_right - logo_w, top_y - logo_h + 0.2 * cm,
+                        width=logo_w, height=logo_h, mask='auto', preserveAspectRatio=True)
+        except Exception:
+            pass
+
+    cy = top_y
+    c.setFont(arabic_font, min(12, h * 0.09))
+    c.drawCentredString(x + w / 2, cy, rs(ORG_NAME))
+    cy -= 0.5 * cm
+    c.setFont(arabic_font, min(10.5, h * 0.075))
+    c.drawCentredString(x + w / 2, cy, rs(item['title']))
+    cy -= 0.35 * cm
+    c.setLineWidth(0.6)
+    c.line(x + pad + 0.3 * cm, cy, x + w - pad - 0.3 * cm, cy)
+    cy -= 0.45 * cm
+
+    field_font_size = min(9, h * 0.065)
+    c.setFont(arabic_font, field_font_size)
+    right_x = x + w - pad - 0.5 * cm
+
+    def field(label, value):
+        nonlocal cy
+        c.drawRightString(right_x, cy, rs(f"{label}: {value}"))
+        cy -= 0.42 * cm
+
+    if item.get('ref'):
+        field('الرقم المرجعي', item['ref'])
+    field(item['name_label'], item['name_value'])
+    field('المبلغ', f"{item['amount']} د.ج")
+    if item.get('method_label'):
+        field(item['method_label'], item['method_value'])
+    field(item['extra_label'], item['extra_value'])
+    field('التاريخ', str(item['date_value']))
+
+
+def generate_receipts_pdf(items, filename='receipts.pdf'):
+    """
+    Lays out up to 4 receipts per A4 page in a 2x2 grid, with margins and
+    dashed cutting lines between cells, so a printed sheet can be cut into
+    4 individual receipts. A single receipt (items list of length 1) still
+    renders on a full A4 page — occupying one real quarter of it, with the
+    other three cells left as blank cut-out cells — instead of being
+    stretched to fill (or shrunk to waste) an entire sheet by itself.
+    """
+    width, height = A4
+    margin = 1 * cm
+    cols, rows_per_page = 2, 2
+    per_page = cols * rows_per_page
+
+    cell_w = (width - 2 * margin) / cols
+    cell_h = (height - 2 * margin) / rows_per_page
+
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+
+    arabic_font = _get_arabic_font()
+    rs = _get_reshaper()
+    logo_path = _find_logo_path()
+
+    def draw_cut_lines():
+        c.setDash(3, 3)
+        c.setStrokeColorRGB(0.6, 0.6, 0.6)
+        c.setLineWidth(0.6)
+        # vertical divider
+        c.line(width / 2, margin, width / 2, height - margin)
+        # horizontal divider
+        c.line(margin, height / 2, width - margin, height / 2)
+        c.setDash()  # reset to solid
+
+    for idx, item in enumerate(items):
+        pos_in_page = idx % per_page
+        if pos_in_page == 0:
+            if idx != 0:
+                c.showPage()
+            draw_cut_lines()
+        col = pos_in_page % cols
+        row = pos_in_page // cols
+        x = margin + col * cell_w
+        y = height - margin - (row + 1) * cell_h
+        _draw_receipt_cell(c, x, y, cell_w, cell_h, item, rs, arabic_font, logo_path)
+
+    c.save()
+    buffer.seek(0)
+    response = HttpResponse(buffer, content_type='application/pdf')
+    response['Content-Disposition'] = f'inline; filename="{filename}"'
+    return response

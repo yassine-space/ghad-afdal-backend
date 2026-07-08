@@ -36,6 +36,8 @@ from .views import (
     FinancialDashboardView, 
     FinancialReportView, 
     FinancialAuditLogViewSet,
+    DonationReceiptView,
+    ExpenseReceiptView,    
 
 )
 
@@ -81,6 +83,8 @@ urlpatterns = [
     # ── machine endpoints ──────────────────────────────────────────────────────
     path('finance/dashboard/', FinancialDashboardView.as_view(), name='finance-dashboard'),
     path('finance/reports/', FinancialReportView.as_view(), name='finance-reports'),
+    path('finance/donations/<int:pk>/receipt/', DonationReceiptView.as_view(), name='donation-receipt'),
+    path('finance/expenses/<int:pk>/receipt/', ExpenseReceiptView.as_view(), name='expense-receipt'),
     # ── Router endpoints ──────────────────────────────────────────────────────
     path('', include(router.urls)),
 
