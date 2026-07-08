@@ -1429,7 +1429,7 @@ def _donation_receipt_item(donation):
 
 def _expense_receipt_item(expense):
     return dict(
-        title='إيصال مصروف',
+        title='إيصال الدفع',
         name_label='الوصف', name_value=expense.description,
         amount=expense.amount,
         date_value=expense.date,
@@ -1825,63 +1825,124 @@ def _get_reshaper():
     except ImportError:
         return lambda t: str(t)
 
+ORG_NAME = 'جمعية الغد الأفضل'
+ORG_ADDRESS = 'العنوان: حمام بوغرارة (ولاية تلمسان) | الهاتف: 0553497821'
+# ^ update this with your organization's real address/contact info
+
 
 def _draw_receipt_cell(c, x, y, w, h, item, rs, arabic_font, logo_path):
     """
-    Draws a single receipt inside the cell rectangle whose bottom-left
-    corner is (x, y) and whose size is (w, h). Used both for a single
-    receipt (called once, in the first cell of an A4 sheet) and for the
-    4-up bulk-print layout (called up to 4 times per page).
+    Draws a single, larger, more polished receipt inside the cell rectangle
+    whose bottom-left corner is (x, y) and whose size is (w, h).
     """
-    pad = 0.25 * cm
+    pad = 0.3 * cm
+    inner_x = x + pad
+    inner_y = y + pad
+    inner_w = w - 2 * pad
+    inner_h = h - 2 * pad
 
-    # Receipt border, inset from the cell's cut-line boundary
-    c.setStrokeColorRGB(0.15, 0.15, 0.15)
-    c.setLineWidth(1)
-    c.rect(x + pad, y + pad, w - 2 * pad, h - 2 * pad, stroke=1, fill=0)
+    TEAL = (0.078, 0.722, 0.651)  # matches the app's branding color used elsewhere
 
-    inner_right = x + w - pad - 0.4 * cm
-    top_y = y + h - pad - 0.5 * cm
+    # ── Outer card ────────────────────────────────────────────────────
+    c.setStrokeColorRGB(*TEAL)
+    c.setLineWidth(1.3)
+    c.roundRect(inner_x, inner_y, inner_w, inner_h, 8, stroke=1, fill=0)
 
-    # Small logo, top-right of the cell
+    # ── Header band (logo + org name + receipt title) ───────────────────
+    header_h = inner_h * 0.17
+    header_y = inner_y + inner_h - header_h
+
+    c.saveState()
+    p = c.beginPath()
+    p.roundRect(inner_x, inner_y, inner_w, inner_h, 8)
+    c.clipPath(p, stroke=0, fill=0)
+    c.setFillColorRGB(*TEAL)
+    c.rect(inner_x, header_y, inner_w, header_h, stroke=0, fill=1)
+    c.restoreState()
+
     if logo_path:
         try:
-            logo_w = logo_h = min(1.6 * cm, h * 0.22)
+            logo_size = min(header_h * 0.75, 1.5 * cm)
             logo = ImageReader(logo_path)
-            c.drawImage(logo, inner_right - logo_w, top_y - logo_h + 0.2 * cm,
-                        width=logo_w, height=logo_h, mask='auto', preserveAspectRatio=True)
+            c.drawImage(
+                logo, inner_x + 0.25 * cm, header_y + (header_h - logo_size) / 2,
+                width=logo_size, height=logo_size, mask='auto', preserveAspectRatio=True
+            )
         except Exception:
             pass
 
-    cy = top_y
-    c.setFont(arabic_font, min(12, h * 0.09))
-    c.drawCentredString(x + w / 2, cy, rs(ORG_NAME))
-    cy -= 0.5 * cm
-    c.setFont(arabic_font, min(10.5, h * 0.075))
-    c.drawCentredString(x + w / 2, cy, rs(item['title']))
-    cy -= 0.35 * cm
-    c.setLineWidth(0.6)
-    c.line(x + pad + 0.3 * cm, cy, x + w - pad - 0.3 * cm, cy)
-    cy -= 0.45 * cm
+    c.setFillColorRGB(1, 1, 1)
+    c.setFont(arabic_font, min(14, h * 0.11))
+    c.drawCentredString(inner_x + inner_w / 2, header_y + header_h * 0.60, rs(ORG_NAME))
+    c.setFont(arabic_font, min(11, h * 0.08))
+    c.drawCentredString(inner_x + inner_w / 2, header_y + header_h * 0.18, rs(item['title']))
+    c.setFillColorRGB(0, 0, 0)
 
-    field_font_size = min(9, h * 0.065)
-    c.setFont(arabic_font, field_font_size)
-    right_x = x + w - pad - 0.5 * cm
+    # ── Body fields ───────────────────────────────────────────────────
+    cy = header_y - 0.6 * cm
+    right_x = inner_x + inner_w - 0.5 * cm
+    label_font = min(9.5, h * 0.068)
+    value_font = min(12.5, h * 0.09)
 
     def field(label, value):
         nonlocal cy
-        c.drawRightString(right_x, cy, rs(f"{label}: {value}"))
-        cy -= 0.42 * cm
+        c.setFont(arabic_font, label_font)
+        c.setFillColorRGB(0.45, 0.45, 0.45)
+        c.drawRightString(right_x, cy, rs(label))
+        cy -= 0.44 * cm
+        c.setFont(arabic_font, value_font)
+        c.setFillColorRGB(0.1, 0.1, 0.1)
+        c.drawRightString(right_x, cy - 0.1 * cm, rs(str(value)))
+        cy -= 0.32 * cm
+        c.setStrokeColorRGB(0.85, 0.85, 0.85)
+        c.setLineWidth(0.5)
+        c.line(inner_x + 0.4 * cm, cy, right_x, cy)
+        cy -= 0.4 * cm
 
     if item.get('ref'):
         field('الرقم المرجعي', item['ref'])
     field(item['name_label'], item['name_value'])
-    field('المبلغ', f"{item['amount']} د.ج")
     if item.get('method_label'):
         field(item['method_label'], item['method_value'])
     field(item['extra_label'], item['extra_value'])
     field('التاريخ', str(item['date_value']))
 
+# ── Highlighted amount box ───────────────────────────────────────
+    amount_box_h = 1.15 * cm
+    cy -= 0.15 * cm
+    c.setFillColorRGB(0.93, 0.98, 0.97)
+    c.setStrokeColorRGB(*TEAL)
+    c.setLineWidth(1)
+    c.roundRect(inner_x + 0.4 * cm, cy - amount_box_h, inner_w - 0.8 * cm, amount_box_h, 5, stroke=1, fill=1)
+    c.setFont(arabic_font, min(9, h * 0.06))
+    c.setFillColorRGB(0.2, 0.2, 0.2)
+    c.setFont(arabic_font, min(16, h * 0.115))
+    c.setFillColorRGB(*TEAL)
+    c.drawCentredString(inner_x + inner_w / 2, cy - amount_box_h + 0.45 * cm, rs(f"{item['amount']} دج"))
+    c.setFillColorRGB(0, 0, 0)
+    cy -= amount_box_h + 0.35 * cm
+
+# ── Footer: organization address / phone line ─────────────────────
+    c.setStrokeColorRGB(0.7, 0.7, 0.7)
+    c.setLineWidth(0.5)
+    c.line(inner_x + 0.4 * cm, cy, right_x, cy)
+    cy -= 0.32 * cm
+    c.setFont(arabic_font, min(6.5, h * 0.045))
+    c.setFillColorRGB(0.4, 0.4, 0.4)
+    c.drawCentredString(inner_x + inner_w / 2, cy, rs(ORG_ADDRESS))
+    c.setFillColorRGB(0, 0, 0)
+    cy -= 0.55 * cm
+
+# ── Signature area (centered, directly below the address line) ────
+    sig_line_w = inner_w * 0.42
+    center_x = inner_x + inner_w / 2
+    c.setFont(arabic_font, min(8.5, h * 0.06))
+    c.setFillColorRGB(0.3, 0.3, 0.3)
+    c.drawCentredString(center_x, cy + 0.10 * cm, rs('التوقيع والختم'))
+    c.setStrokeColorRGB(0.5, 0.5, 0.5)
+    c.setLineWidth(0.6)
+    c.line(center_x - sig_line_w / 2, cy- 0.1 * cm, center_x + sig_line_w/ 2, cy - 0.1 * cm)
+    c.setFillColorRGB(0, 0, 0)
 
 def generate_receipts_pdf(items, filename='receipts.pdf'):
     """
