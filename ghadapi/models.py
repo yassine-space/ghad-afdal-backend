@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from django.utils import timezone
 import unicodedata
 class User(AbstractUser):
+    last_activity = models.DateTimeField(null=True, blank=True)
     """
     Custom User model replacing Django's default.
     We extend AbstractUser so we keep all default fields
@@ -22,6 +23,12 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.username
+    
+    @property
+    def is_online(self):
+        if not self.last_activity:
+            return False
+        return (timezone.now() - self.last_activity) <= timedelta(minutes=5)
 
 class Person(models.Model):
     GENDER_CHOICES = [('M', 'Male'), ('F', 'Female')]

@@ -58,13 +58,15 @@ class UserSerializer(serializers.ModelSerializer):
     """
     profile          = UserProfileSerializer(read_only=True)
     activity_accesses = UserActivityAccessSerializer(many=True, read_only=True)
+    is_online         = serializers.ReadOnlyField()
+    last_activity     = serializers.DateTimeField(read_only=True)
 
     class Meta:
         model  = User
         fields = [
             'id', 'username', 'first_name', 'last_name',
             'email', 'is_active', 'is_superuser',
-            'profile', 'activity_accesses',
+            'profile', 'activity_accesses', 'is_online', 'last_activity'
         ]
 
 
