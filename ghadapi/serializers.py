@@ -384,12 +384,12 @@ class MachineAssignmentSerializer(serializers.ModelSerializer):
     machine_name = serializers.CharField(source='machine.name',     read_only=True)
     bar_code     = serializers.CharField(source='machine.bar_code', read_only=True)
     is_returned  = serializers.SerializerMethodField()
-
+    person_phone = serializers.CharField(source='assigned_to.phone', read_only=True)
     class Meta:
         model  = MachineAssignment
         fields = [
             'id', 'machine', 'machine_name', 'bar_code',
-            'assigned_to', 'person_name',
+            'assigned_to', 'person_name', 'person_phone',
             'assigned_at', 'returned_at', 'is_returned',
             'description',
         ]
