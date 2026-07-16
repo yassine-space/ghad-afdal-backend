@@ -1755,22 +1755,22 @@ class FinancialReportView(APIView):
             c.rect(x_start, y, table_w, (len(rows) + 1) * row_h, stroke=1, fill=0)
             y -= 0.6 * cm
 
-        donation_widths = [3.4 * cm, 2.6 * cm, 2.6 * cm, 3.4 * cm, 2.6 * cm]
+        donation_widths = [1 * cm, 3.4 * cm, 2.6 * cm, 2.6 * cm, 3.4 * cm, 2.6 * cm]
         draw_table(
             'سجل التبرعات',
-            ['المتبرع', 'المبلغ (د.ج)', 'طريقة الدفع', 'الفئة', 'التاريخ'],
+            ['#', 'المتبرع', 'المبلغ (د.ج)', 'طريقة الدفع', 'الفئة', 'التاريخ'],
             donation_widths,
-            [[d.donor_name, d.amount, d.get_payment_method_display(), d.category.name, str(d.date)]
-             for d in donations] or [['—', '—', '—', '—', '—']],
+            [[i + 1, d.donor_name, d.amount, d.get_payment_method_display(), d.category.name, str(d.date)]
+             for i, d in enumerate(donations)] or [['—', '—', '—', '—', '—', '—']],
         )
 
-        expense_widths = [2.8 * cm, 3.2 * cm, 5.6 * cm, 2.8 * cm]
+        expense_widths = [1 * cm, 2.8 * cm, 3.2 * cm, 5.6 * cm, 2.8 * cm]
         draw_table(
             'سجل المصروفات',
-            ['المبلغ (د.ج)', 'الفئة', 'الوصف', 'التاريخ'],
+            ['#', 'المبلغ (د.ج)', 'الفئة', 'الوصف', 'التاريخ'],
             expense_widths,
-            [[e.amount, e.category.name, e.description[:40], str(e.date)]
-             for e in expenses] or [['—', '—', '—', '—']],
+            [[i + 1, e.amount, e.category.name, e.description[:40], str(e.date)]
+             for i, e in enumerate(expenses)] or [['—', '—', '—', '—', '—']],
         )
 
         draw_footer()
