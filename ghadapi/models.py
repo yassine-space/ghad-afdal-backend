@@ -702,3 +702,17 @@ def create_expense_from_invoice_donation(sender, instance, created, **kwargs):
             )
         except Exception:
             pass  # never block donation creation on finance bookkeeping
+
+
+class WarmWinterDonation(models.Model):
+    beneficiary = models.ForeignKey(
+        Person, on_delete=models.CASCADE, related_name='warm_winter_donations'
+    )
+    date             = models.DateField()
+
+    class Meta:
+        db_table = 'warm_winter_donation'
+        ordering = ['-date']
+
+    def __str__(self):
+        return f"{self.benefeciary_name} ({self.date})"

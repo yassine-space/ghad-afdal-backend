@@ -20,6 +20,7 @@ from .models import (
     DistributionItem,
     Machine,
     MachineAssignment,
+    WarmWinterDonation,
 )
 
 
@@ -479,3 +480,15 @@ class FinancialAuditLogSerializer(serializers.ModelSerializer):
     class Meta:
         model  = FinancialAuditLog
         fields = ['id', 'username', 'action', 'model_name', 'object_id', 'details', 'timestamp']
+
+
+class WarmWinterDonationSerializer(serializers.ModelSerializer):
+    beneficiary_name  = serializers.SerializerMethodField()
+    beneficiary_phone = serializers.CharField(source='beneficiary.phone', read_only=True)
+ 
+    class Meta:
+        model  = WarmWinterDonation
+        fields = ['id', 'beneficiary', 'beneficiary_name', 'beneficiary_phone', 'date']
+ 
+    def get_beneficiary_name(self, obj):
+        return f"{obj.beneficiary.first_name} {obj.beneficiary.last_name}"

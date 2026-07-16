@@ -37,7 +37,8 @@ from .views import (
     FinancialReportView, 
     FinancialAuditLogViewSet,
     DonationReceiptView,
-    ExpenseReceiptView,    
+    ExpenseReceiptView,
+    WarmWinterDonationViewSet,    
 
 )
 
@@ -60,7 +61,7 @@ router.register(r'finance/categories', FinancialCategoryViewSet, basename='finan
 router.register(r'finance/donations', DonationViewSet, basename='donation')
 router.register(r'finance/expenses', ExpenseTransactionViewSet, basename='expense')
 router.register(r'finance/audit-log', FinancialAuditLogViewSet, basename='finance-audit-log')
-
+router.register(r'warm-winter', WarmWinterDonationViewSet, basename='warm-winter')
 urlpatterns = [
     
 

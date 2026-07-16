@@ -26,7 +26,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
 import barcode
 from barcode.writer import ImageWriter
-from .serializers import MachineSerializer, MachineAssignmentSerializer
+from .serializers import MachineSerializer, MachineAssignmentSerializer, WarmWinterDonationSerializer
 import calendar
 from openpyxl import Workbook
 from django.http import HttpResponse
@@ -50,6 +50,7 @@ from .models import (
     DonationItem,
     DrugDistribution,
     DistributionItem,
+    WarmWinterDonation,
     get_user_activities,
     Machine,
     MachineAssignment
@@ -2000,3 +2001,20 @@ def generate_receipts_pdf(items, filename='receipts.pdf'):
     response = HttpResponse(buffer, content_type='application/pdf')
     response['Content-Disposition'] = f'inline; filename="{filename}"'
     return response
+
+
+
+WARM_WINTER_KEYWORDS = ['شتاء', 'دافئ', 'winter']
+ 
+ 
+class WarmWinterDonationViewSet(viewsets.ModelViewSet):
+    """
+    GET            → viewer   (list/retrieve beneficiaries)
+    POST/PUT/PATCH → editor   (add/edit beneficiary)
+    DELETE         → manager  (remove beneficiary)
+    Requires an activity whose name contains one of WARM_WINTER_KEYWORDS.
+    """
+    queryset           = WarmWinterDonation.objects.select_related('beneficiary').all()
+    serializer_class    = WarmWinterDonationSerializer
+    permission_classes  = [HasActivityAccess]
+    activity_keywords   = WARM_WINTER_KEYWORDS
