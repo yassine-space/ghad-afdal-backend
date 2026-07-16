@@ -1474,7 +1474,7 @@ class FinancialReportView(APIView):
 
         year = request.query_params.get('year')
         month = request.query_params.get('month')
-        category = request.query_params.get('category')
+        category = request.query_params.get('category')  # comma-separated ids, e.g. "1,3,5"
 
         if year:
             donations = donations.filter(date__year=year)
@@ -1482,20 +1482,25 @@ class FinancialReportView(APIView):
         if month:
             donations = donations.filter(date__month=month)
             expenses  = expenses.filter(date__month=month)
-        if category:
-            donations = donations.filter(category_id=category)
-            expenses  = expenses.filter(category_id=category)
+
+        category_ids = [c for c in (category.split(',') if category else []) if c]
+        if category_ids:
+            donations = donations.filter(category_id__in=category_ids)
+            expenses  = expenses.filter(category_id__in=category_ids)
 
         fmt = request.query_params.get('export_format', 'json')
 
-        category_obj = None
-        if category:
-            category_obj = FinancialCategory.objects.filter(id=category).first()
+        categories_label = None
+        if category_ids:
+            cat_names = list(
+                FinancialCategory.objects.filter(id__in=category_ids).values_list('name', flat=True)
+            )
+            categories_label = '، '.join(sorted(cat_names)) if cat_names else None
 
         if fmt == 'excel':
-            return self._export_excel(donations, expenses, year, month, category_obj)
+            return self._export_excel(donations, expenses, year, month, categories_label)
         if fmt == 'pdf':
-            return self._export_pdf(donations, expenses, year, month, category_obj)
+            return self._export_pdf(donations, expenses, year, month, categories_label)
 
         total_donations = donations.aggregate(total=Sum('amount'))['total'] or 0
         total_expenses  = expenses.aggregate(total=Sum('amount'))['total'] or 0
@@ -1507,15 +1512,15 @@ class FinancialReportView(APIView):
             'expenses': ExpenseTransactionSerializer(expenses, many=True, context={'request': request}).data,
         })
 
-    def _report_meta(self, donations, expenses, year, month, category_obj):
-        if category_obj:
-            categories_label = category_obj.name
+    def _report_meta(self, donations, expenses, year, month, categories_label=None):
+        if categories_label:
+            categories_label_final = categories_label
         else:
             names = sorted(set(
                 list(donations.values_list('category__name', flat=True)) +
                 list(expenses.values_list('category__name', flat=True))
             ))
-            categories_label = '، '.join(names) if names else 'كل الفئات'
+            categories_label_final = '، '.join(names) if names else 'كل الفئات'
 
         MONTH_NAMES_AR = ['', 'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
                           'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
@@ -1535,14 +1540,14 @@ class FinancialReportView(APIView):
             'generated_at': timezone.now().strftime('%Y-%m-%d %H:%M'),
             'year': str(year) if year else 'كل السنوات',
             'period': period_label,
-            'categories': categories_label,
+            'categories': categories_label_final,
         }
 
-    def _export_excel(self, donations, expenses, year=None, month=None, category_obj=None):
+    def _export_excel(self, donations, expenses, year=None, month=None, categories_label=None):
         from openpyxl.styles import Font, PatternFill, Alignment
         from openpyxl.utils import get_column_letter
 
-        meta = self._report_meta(donations, expenses, year, month, category_obj)
+        meta = self._report_meta(donations, expenses, year, month, categories_label)
         header_fill = PatternFill(start_color='14B8A6', end_color='14B8A6', fill_type='solid')
         header_font = Font(bold=True, color='FFFFFF')
         title_font = Font(bold=True, size=14)
@@ -1608,13 +1613,13 @@ class FinancialReportView(APIView):
         wb.save(response)
         return response
 
-    def _export_pdf(self, donations, expenses, year=None, month=None, category_obj=None):
+    def _export_pdf(self, donations, expenses, year=None, month=None, categories_label=None):
         width, height = A4
         margin = 2 * cm
         arabic_font = _get_arabic_font()
         rs = _get_reshaper()
         logo_path = _find_logo_path()
-        meta = self._report_meta(donations, expenses, year, month, category_obj)
+        meta = self._report_meta(donations, expenses, year, month, categories_label)
 
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=A4)
