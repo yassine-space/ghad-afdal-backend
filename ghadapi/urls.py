@@ -8,6 +8,7 @@ from .views import (
     CertificateView,
     CompatibleDonorsView,
     DonateBloodView,
+    DrugDistributionReportView,
     LoginView,
     MeView,
     # Admin-managed
@@ -88,6 +89,7 @@ urlpatterns = [
     path('finance/reports/', FinancialReportView.as_view(), name='finance-reports'),
     path('finance/donations/<int:pk>/receipt/', DonationReceiptView.as_view(), name='donation-receipt'),
     path('finance/expenses/<int:pk>/receipt/', ExpenseReceiptView.as_view(), name='expense-receipt'),
+    path('distributions/report/', DrugDistributionReportView.as_view(), name='distribution-report'),
     # ── Router endpoints ──────────────────────────────────────────────────────
     path('', include(router.urls)),
 

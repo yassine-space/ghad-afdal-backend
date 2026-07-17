@@ -1,5 +1,5 @@
 from urllib import request
-
+from openpyxl import Workbook
 from django.http import HttpResponse
 from rest_framework import viewsets, status
 from rest_framework.permissions import IsAuthenticated
@@ -415,6 +415,293 @@ class DrugDistributionViewSet(viewsets.ModelViewSet):
 
         return Response(DrugDistributionSerializer(distribution).data)
 
+class DrugDistributionReportView(APIView):
+    """
+    GET /api/distributions/report/?year=2026&month=7&export_format=json|excel|pdf
+    Same contract as FinancialReportView, scoped to DrugDistribution.
+    Requires viewer access on a pharmacy-keyword activity.
+    """
+    permission_classes = [HasActivityAccess]
+    activity_keywords  = ['pharma', 'صيدل', 'drug', 'دواء', 'medicine']
+
+    MONTH_NAMES_AR = ['', 'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+                       'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
+
+    def get(self, request):
+        qs = (
+            DrugDistribution.objects
+            .prefetch_related('items__stock__drug')
+            .select_related('beneficiary')
+            .all()
+        )
+    
+        year_param  = request.query_params.get('year')   # e.g. "2025,2026"
+        month_param = request.query_params.get('month')  # e.g. "6,7"
+    
+        years  = [y for y in (year_param.split(',') if year_param else [])  if y]
+        months = [m for m in (month_param.split(',') if month_param else []) if m]
+    
+        if years:
+            qs = qs.filter(distribution_date__year__in=years)
+        if months:
+            qs = qs.filter(distribution_date__month__in=months)
+        qs = qs.order_by('-distribution_date')
+    
+        fmt = request.query_params.get('export_format', 'json')
+        if fmt == 'excel':
+            return self._export_excel(qs, year_param, month_param)
+        if fmt == 'pdf':
+            return self._export_pdf(qs, year_param, month_param)
+        total_units = sum(sum(it.quantity for it in d.items.all()) for d in qs)
+        return Response({
+            'total_distributions':  qs.count(),
+            'validated_count':      qs.filter(is_validated=True).count(),
+            'pending_count':        qs.filter(is_validated=False).count(),
+            'total_units':          total_units,
+            'unique_beneficiaries': qs.values('beneficiary').distinct().count(),
+            'distributions': DrugDistributionSerializer(qs, many=True, context={'request': request}).data,
+        })
+
+    def _meta(self, year, month):
+        MONTH_NAMES_AR = ['', 'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+                           'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
+    
+        def label_list(raw, names=None):
+            if not raw:
+                return None
+            parts = [p for p in raw.split(',') if p]
+            if names:
+                parts = [names[int(p)] if p.isdigit() and int(p) < len(names) else p for p in parts]
+            return '، '.join(parts)
+    
+        year_label  = label_list(year)
+        month_label = label_list(month, MONTH_NAMES_AR)
+        period_bits = [b for b in (year_label, month_label) if b]
+        period_label = ' - '.join(period_bits) if period_bits else 'كل الفترات'
+    
+        return {
+            'title':        'تقرير عمليات الصرف',
+            'description':  'تقرير يوضح عمليات صرف الأدوية المسجلة خلال الفترة المحددة.',
+            'generated_at': timezone.now().strftime('%Y-%m-%d %H:%M'),
+            'period':       period_label,
+        }
+
+    # ── EXCEL ──────────────────────────────────────────────────────────
+    def _export_excel(self, qs, year=None, month=None):
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        meta = self._meta(year, month)
+        header_fill = PatternFill(start_color='06B6D4', end_color='06B6D4', fill_type='solid')
+        header_font = Font(bold=True, color='FFFFFF')
+        title_font  = Font(bold=True, size=14)
+
+        wb = Workbook()
+        ws0 = wb.active
+        ws0.title = 'ملخص'
+        ws0['A1'] = ORG_NAME
+        ws0['A1'].font = title_font
+        ws0['A2'] = meta['title']
+        ws0['A2'].font = Font(bold=True, size=12)
+        ws0['A3'] = f"تاريخ الإصدار: {meta['generated_at']}"
+        ws0['A4'] = f"الفترة: {meta['period']}"
+
+        total_units = sum(sum(it.quantity for it in d.items.all()) for d in qs)
+        ws0['A6'] = 'إجمالي عمليات الصرف';      ws0['B6'] = qs.count()
+        ws0['A7'] = 'معتمدة';                    ws0['B7'] = qs.filter(is_validated=True).count()
+        ws0['A8'] = 'في الانتظار';               ws0['B8'] = qs.filter(is_validated=False).count()
+        ws0['A9'] = 'إجمالي الوحدات المصروفة';   ws0['B9'] = total_units
+        for r in range(6, 10):
+            ws0[f'A{r}'].font = Font(bold=True)
+        ws0.column_dimensions['A'].width = 28
+        ws0.column_dimensions['B'].width = 18
+
+        ws1 = wb.create_sheet('عمليات الصرف')
+        ws1.append(['المستفيد', 'الطبيب', 'رقم الوصفة', 'التاريخ', 'الحالة', 'الأصناف'])
+        for cell in ws1[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center')
+        for d in qs:
+            items_str = '، '.join(f"{it.stock.drug.dci_name} ×{it.quantity}" for it in d.items.all())
+            ws1.append([
+                f"{d.beneficiary.first_name} {d.beneficiary.last_name}",
+                d.doctor_name,
+                d.prescription_number or '',
+                str(d.distribution_date),
+                'معتمد' if d.is_validated else 'في الانتظار',
+                items_str,
+            ])
+        for i, w in enumerate([22, 20, 16, 14, 14, 50], start=1):
+            ws1.column_dimensions[get_column_letter(i)].width = w
+        ws1.freeze_panes = 'A2'
+
+        response = HttpResponse(
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = 'attachment; filename="distributions_report.xlsx"'
+        wb.save(response)
+        return response
+
+    # ── PDF ────────────────────────────────────────────────────────────
+    def _export_pdf(self, qs, year=None, month=None):
+        width, height = A4
+        margin = 2 * cm
+        arabic_font = _get_arabic_font()
+        rs = reshape_arabic
+        logo_path = _find_logo_path()
+        meta = self._meta(year, month)
+
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=A4)
+        page_num = [1]
+
+        def draw_footer():
+            c.setFont(arabic_font, 8)
+            c.setFillColorRGB(0.45, 0.45, 0.45)
+            c.drawCentredString(width / 2, 1 * cm, rs(ORG_NAME))
+            c.drawRightString(width - margin, 1 * cm, rs(f"صفحة {page_num[0]}"))
+            c.setFillColorRGB(0, 0, 0)
+
+        def draw_header(is_first_page):
+            y = height - margin
+            if is_first_page and logo_path:
+                try:
+                    logo_w = logo_h = 2 * cm
+                    logo = ImageReader(logo_path)
+                    c.drawImage(logo, width / 2 - logo_w / 2, y - logo_h,
+                                width=logo_w, height=logo_h, mask='auto', preserveAspectRatio=True)
+                except Exception:
+                    pass
+                y -= logo_h + 0.3 * cm
+
+            c.setFont(arabic_font, 15)
+            c.drawCentredString(width / 2, y, rs(ORG_NAME)); y -= 0.65 * cm
+            c.setFont(arabic_font, 13)
+            c.drawCentredString(width / 2, y, rs(meta['title'])); y -= 0.55 * cm
+
+            if is_first_page:
+                c.setFont(arabic_font, 8.5)
+                c.drawCentredString(width / 2, y, rs(meta['description'])); y -= 0.55 * cm
+                c.setLineWidth(0.8); c.setStrokeColorRGB(0.75, 0.75, 0.75)
+                c.line(margin, y, width - margin, y); y -= 0.5 * cm
+                c.setFont(arabic_font, 9)
+                c.drawRightString(width - margin, y, rs(f"تاريخ الإصدار: {meta['generated_at']}")); y -= 0.45 * cm
+                c.drawRightString(width - margin, y, rs(f"الفترة المشمولة: {meta['period']}")); y -= 0.45 * cm
+            else:
+                c.setLineWidth(0.8); c.setStrokeColorRGB(0.75, 0.75, 0.75)
+                c.line(margin, y, width - margin, y); y -= 0.4 * cm
+
+            return y - 0.2 * cm
+
+        def new_page(is_first=False):
+            if not is_first:
+                draw_footer()
+                c.showPage()
+                page_num[0] += 1
+            return draw_header(is_first)
+
+        def ensure_space(y, needed):
+            if y - needed < margin + 1 * cm:
+                return new_page(False)
+            return y
+
+        y = new_page(is_first=True)
+
+        total_units = sum(sum(it.quantity for it in d.items.all()) for d in qs)
+        stats = [
+            ('إجمالي العمليات',    str(qs.count())),
+            ('معتمدة',              str(qs.filter(is_validated=True).count())),
+            ('في الانتظار',         str(qs.filter(is_validated=False).count())),
+            ('إجمالي الوحدات',      str(total_units)),
+        ]
+        gap = 0.4 * cm
+        box_w = (width - 2 * margin - 3 * gap) / 4
+        box_h = 1.6 * cm
+        y -= box_h
+        for i, (label, val) in enumerate(stats):
+            bx = margin + i * (box_w + gap)
+            c.setStrokeColorRGB(0.7, 0.7, 0.7); c.setLineWidth(0.8)
+            c.roundRect(bx, y, box_w, box_h, 4, stroke=1, fill=0)
+            c.setFont(arabic_font, 8.5)
+            c.drawCentredString(bx + box_w / 2, y + box_h - 0.55 * cm, rs(label))
+            c.setFont(arabic_font, 12)
+            c.drawCentredString(bx + box_w / 2, y + 0.45 * cm, rs(val))
+        y -= 0.7 * cm
+
+        def draw_table(section_title, headers, col_widths, rows):
+            nonlocal y
+            y = ensure_space(y, 1.2 * cm)
+            c.setFont(arabic_font, 11.5)
+            c.drawRightString(width - margin, y, rs(section_title))
+            y -= 0.5 * cm
+
+            row_h = 0.55 * cm
+            table_w = sum(col_widths)
+            x_start = width - margin - table_w
+
+            def draw_header_row():
+                nonlocal y
+                c.setFillColorRGB(0.024, 0.714, 0.831)  # cyan — matches pharmacy branding
+                c.rect(x_start, y - row_h, table_w, row_h, stroke=0, fill=1)
+                c.setFillColorRGB(1, 1, 1)
+                c.setFont(arabic_font, 9)
+                cx = width - margin
+                for h, w in zip(headers, col_widths):
+                    c.drawCentredString(cx - w / 2, y - row_h + 0.16 * cm, rs(h))
+                    cx -= w
+                c.setFillColorRGB(0, 0, 0)
+                y -= row_h
+
+            draw_header_row()
+            c.setFont(arabic_font, 8.5)
+            for ridx, row in enumerate(rows):
+                if y - row_h < margin + 1 * cm:
+                    y = new_page(False)
+                    y = ensure_space(y, row_h)
+                    draw_header_row()
+                if ridx % 2 == 0:
+                    c.setFillColorRGB(0.95, 0.97, 0.97)
+                    c.rect(x_start, y - row_h, table_w, row_h, stroke=0, fill=1)
+                    c.setFillColorRGB(0, 0, 0)
+                cx = width - margin
+                for val, w in zip(row, col_widths):
+                    c.drawCentredString(cx - w / 2, y - row_h + 0.16 * cm, rs(str(val)))
+                    cx -= w
+                c.setStrokeColorRGB(0.85, 0.85, 0.85); c.setLineWidth(0.4)
+                c.line(x_start, y - row_h, x_start + table_w, y - row_h)
+                y -= row_h
+
+            c.setStrokeColorRGB(0.6, 0.6, 0.6); c.setLineWidth(0.8)
+            c.rect(x_start, y, table_w, (len(rows) + 1) * row_h, stroke=1, fill=0)
+            y -= 0.6 * cm
+
+        col_widths = [0.8*cm, 3.2*cm, 2.6*cm, 2.2*cm, 2.6*cm, 2*cm, 4.5*cm]
+        rows = []
+        for i, d in enumerate(qs):
+            items_str = ' ، '.join(f"{it.stock.drug.dci_name} ×{it.quantity}" for it in d.items.all())
+            rows.append([
+                i + 1,
+                f"{d.beneficiary.first_name} {d.beneficiary.last_name}",
+                d.doctor_name,
+                d.prescription_number or '—',
+                str(d.distribution_date),
+                'معتمد' if d.is_validated else 'انتظار',
+                items_str[:60],
+            ])
+        draw_table(
+            'سجل عمليات الصرف',
+            ['#', 'المستفيد', 'الطبيب', 'الوصفة', 'التاريخ', 'الحالة', 'الأصناف'],
+            col_widths,
+            rows or [['—'] * 7],
+        )
+
+        draw_footer()
+        c.save()
+        buffer.seek(0)
+        response = HttpResponse(buffer, content_type='application/pdf')
+        response['Content-Disposition'] = 'attachment; filename="distributions_report.pdf"'
+        return response
 
 # ─────────────────────────────────────────────
 # DASHBOARD
@@ -704,6 +991,35 @@ def reshape_arabic(text):
             return str(text)
     else:
         return str(text)
+ORG_NAME = 'جمعية الغد الأفضل'   # update if this differs from your finance page's constant
+
+
+def _find_logo_path():
+    for rel in [('static', 'images', 'logo.jpg'), ('static', 'images', 'logo.png'),
+                ('static', 'img', 'logo.jpg'), ('static', 'img', 'logo.png')]:
+        p = os.path.join(settings.BASE_DIR, *rel)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _get_arabic_font():
+    arabic_font = 'Helvetica'
+    try:
+        possible_font_paths = [
+            os.path.join(settings.BASE_DIR, 'static', 'fonts', 'Amiri-Regular.ttf'),
+            os.path.join(settings.BASE_DIR, 'static', 'fonts', 'NotoSansArabic-Regular.ttf'),
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+        ]
+        for fp in possible_font_paths:
+            if os.path.exists(fp):
+                pdfmetrics.registerFont(TTFont('ArabicFont', fp))
+                arabic_font = 'ArabicFont'
+                break
+    except Exception:
+        pass
+    return arabic_font
+
 
 class CertificateView(APIView):
     """
