@@ -414,7 +414,6 @@ class DrugDistributionViewSet(viewsets.ModelViewSet):
             return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(DrugDistributionSerializer(distribution).data)
-
 class DrugDistributionReportView(APIView):
     """
     GET /api/distributions/report/?year=2026&month=7&export_format=json|excel|pdf
@@ -434,19 +433,19 @@ class DrugDistributionReportView(APIView):
             .select_related('beneficiary')
             .all()
         )
-    
-        year_param  = request.query_params.get('year')   # e.g. "2025,2026"
-        month_param = request.query_params.get('month')  # e.g. "6,7"
-    
+
+        year_param  = request.query_params.get('year')
+        month_param = request.query_params.get('month')
+
         years  = [y for y in (year_param.split(',') if year_param else [])  if y]
         months = [m for m in (month_param.split(',') if month_param else []) if m]
-    
+
         if years:
             qs = qs.filter(distribution_date__year__in=years)
         if months:
             qs = qs.filter(distribution_date__month__in=months)
         qs = qs.order_by('-distribution_date')
-    
+
         fmt = request.query_params.get('export_format', 'json')
         if fmt == 'excel':
             return self._export_excel(qs, year_param, month_param)
@@ -465,7 +464,7 @@ class DrugDistributionReportView(APIView):
     def _meta(self, year, month):
         MONTH_NAMES_AR = ['', 'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
                            'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
-    
+
         def label_list(raw, names=None):
             if not raw:
                 return None
@@ -473,12 +472,12 @@ class DrugDistributionReportView(APIView):
             if names:
                 parts = [names[int(p)] if p.isdigit() and int(p) < len(names) else p for p in parts]
             return '، '.join(parts)
-    
+
         year_label  = label_list(year)
         month_label = label_list(month, MONTH_NAMES_AR)
         period_bits = [b for b in (year_label, month_label) if b]
         period_label = ' - '.join(period_bits) if period_bits else 'كل الفترات'
-    
+
         return {
             'title':        'تقرير عمليات الصرف',
             'description':  'تقرير يوضح عمليات صرف الأدوية المسجلة خلال الفترة المحددة.',
@@ -488,13 +487,14 @@ class DrugDistributionReportView(APIView):
 
     # ── EXCEL ──────────────────────────────────────────────────────────
     def _export_excel(self, qs, year=None, month=None):
-        from openpyxl.styles import Font, PatternFill, Alignment
-        from openpyxl.utils import get_column_letter
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
         meta = self._meta(year, month)
         header_fill = PatternFill(start_color='06B6D4', end_color='06B6D4', fill_type='solid')
         header_font = Font(bold=True, color='FFFFFF')
         title_font  = Font(bold=True, size=14)
+        thin = Side(style='thin', color='DDDDDD')
+        cell_border = Border(top=thin, bottom=thin, left=thin, right=thin)
 
         wb = Workbook()
         ws0 = wb.active
@@ -516,23 +516,44 @@ class DrugDistributionReportView(APIView):
         ws0.column_dimensions['A'].width = 28
         ws0.column_dimensions['B'].width = 18
 
+        # ── Distributions sheet: one row per record, items wrapped nicely ──
         ws1 = wb.create_sheet('عمليات الصرف')
-        ws1.append(['المستفيد', 'الطبيب', 'رقم الوصفة', 'التاريخ', 'الحالة', 'الأصناف'])
+        headers = ['#', 'المستفيد', 'الطبيب', 'رقم الوصفة', 'التاريخ', 'الحالة', 'عدد الأصناف', 'الأصناف']
+        ws1.append(headers)
         for cell in ws1[1]:
             cell.font = header_font
             cell.fill = header_fill
-            cell.alignment = Alignment(horizontal='center')
-        for d in qs:
-            items_str = '، '.join(f"{it.stock.drug.dci_name} ×{it.quantity}" for it in d.items.all())
-            ws1.append([
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.border = cell_border
+
+        for idx, d in enumerate(qs, start=1):
+            items = list(d.items.all())
+            # One item per line instead of one long comma-separated string —
+            # this is what was overflowing/breaking the layout with several items.
+            items_str = '\n'.join(f"• {it.stock.drug.dci_name} ({it.stock.drug.dosage}) × {it.quantity}" for it in items)
+            row = [
+                idx,
                 f"{d.beneficiary.first_name} {d.beneficiary.last_name}",
                 d.doctor_name,
-                d.prescription_number or '',
+                d.prescription_number or '—',
                 str(d.distribution_date),
                 'معتمد' if d.is_validated else 'في الانتظار',
+                len(items),
                 items_str,
-            ])
-        for i, w in enumerate([22, 20, 16, 14, 14, 50], start=1):
+            ]
+            ws1.append(row)
+            r = ws1.max_row
+            # Wrap the items cell and size the row to fit every line
+            items_cell = ws1.cell(row=r, column=8)
+            items_cell.alignment = Alignment(horizontal='right', vertical='top', wrap_text=True)
+            for col in range(1, 8):
+                ws1.cell(row=r, column=col).alignment = Alignment(horizontal='center', vertical='center')
+                ws1.cell(row=r, column=col).border = cell_border
+            items_cell.border = cell_border
+            ws1.row_dimensions[r].height = max(18, 15 * max(1, len(items)))
+
+        widths = [5, 22, 20, 16, 14, 14, 12, 55]
+        for i, w in enumerate(widths, start=1):
             ws1.column_dimensions[get_column_letter(i)].width = w
         ws1.freeze_panes = 'A2'
 
@@ -608,12 +629,13 @@ class DrugDistributionReportView(APIView):
 
         y = new_page(is_first=True)
 
+        # ── Summary stat boxes ───────────────────────────────────────────
         total_units = sum(sum(it.quantity for it in d.items.all()) for d in qs)
         stats = [
-            ('إجمالي العمليات',    str(qs.count())),
-            ('معتمدة',              str(qs.filter(is_validated=True).count())),
-            ('في الانتظار',         str(qs.filter(is_validated=False).count())),
-            ('إجمالي الوحدات',      str(total_units)),
+            ('إجمالي العمليات', str(qs.count())),
+            ('معتمدة', str(qs.filter(is_validated=True).count())),
+            ('في الانتظار', str(qs.filter(is_validated=False).count())),
+            ('إجمالي الوحدات', str(total_units)),
         ]
         gap = 0.4 * cm
         box_w = (width - 2 * margin - 3 * gap) / 4
@@ -629,72 +651,124 @@ class DrugDistributionReportView(APIView):
             c.drawCentredString(bx + box_w / 2, y + 0.45 * cm, rs(val))
         y -= 0.7 * cm
 
-        def draw_table(section_title, headers, col_widths, rows):
+        # ── Column layout for the main table ──────────────────────────────
+        col_defs = [
+            ('#',        0.8 * cm),
+            ('المستفيد', 3.0 * cm),
+            ('الطبيب',   2.6 * cm),
+            ('الوصفة',   2.0 * cm),
+            ('التاريخ',  2.2 * cm),
+            ('الحالة',   1.8 * cm),
+            ('الأصناف',  4.6 * cm),
+        ]
+        headers      = [h for h, _ in col_defs]
+        col_widths   = [w for _, w in col_defs]
+        table_w      = sum(col_widths)
+        x_start      = width - margin - table_w
+        items_col_w  = col_widths[-1]
+        line_h       = 0.42 * cm
+        row_pad      = 0.15 * cm
+
+        def wrap_lines(text, max_width, font_size):
+            """Break `text` into lines that fit max_width using the current font."""
+            words = text.split(' ')
+            lines, current = [], ''
+            for w in words:
+                trial = f"{current} {w}".strip()
+                if c.stringWidth(rs(trial), arabic_font, font_size) <= max_width - 6 or not current:
+                    current = trial
+                else:
+                    lines.append(current)
+                    current = w
+            if current:
+                lines.append(current)
+            return lines
+
+        def draw_header_row():
             nonlocal y
-            y = ensure_space(y, 1.2 * cm)
-            c.setFont(arabic_font, 11.5)
-            c.drawRightString(width - margin, y, rs(section_title))
-            y -= 0.5 * cm
+            row_h = 0.6 * cm
+            c.setFillColorRGB(0.024, 0.714, 0.831)  # cyan — matches pharmacy branding
+            c.rect(x_start, y - row_h, table_w, row_h, stroke=0, fill=1)
+            c.setFillColorRGB(1, 1, 1)
+            c.setFont(arabic_font, 9)
+            cx = width - margin
+            for h, w in zip(headers, col_widths):
+                c.drawCentredString(cx - w / 2, y - row_h + 0.18 * cm, rs(h))
+                cx -= w
+            c.setFillColorRGB(0, 0, 0)
+            y -= row_h
 
-            row_h = 0.55 * cm
-            table_w = sum(col_widths)
-            x_start = width - margin - table_w
+        y = ensure_space(y, 1.2 * cm)
+        c.setFont(arabic_font, 11.5)
+        c.drawRightString(width - margin, y, rs('سجل عمليات الصرف'))
+        y -= 0.5 * cm
+        draw_header_row()
 
-            def draw_header_row():
-                nonlocal y
-                c.setFillColorRGB(0.024, 0.714, 0.831)  # cyan — matches pharmacy branding
-                c.rect(x_start, y - row_h, table_w, row_h, stroke=0, fill=1)
-                c.setFillColorRGB(1, 1, 1)
-                c.setFont(arabic_font, 9)
-                cx = width - margin
-                for h, w in zip(headers, col_widths):
-                    c.drawCentredString(cx - w / 2, y - row_h + 0.16 * cm, rs(h))
-                    cx -= w
-                c.setFillColorRGB(0, 0, 0)
-                y -= row_h
-
-            draw_header_row()
-            c.setFont(arabic_font, 8.5)
-            for ridx, row in enumerate(rows):
-                if y - row_h < margin + 1 * cm:
-                    y = new_page(False)
-                    y = ensure_space(y, row_h)
-                    draw_header_row()
-                if ridx % 2 == 0:
-                    c.setFillColorRGB(0.95, 0.97, 0.97)
-                    c.rect(x_start, y - row_h, table_w, row_h, stroke=0, fill=1)
-                    c.setFillColorRGB(0, 0, 0)
-                cx = width - margin
-                for val, w in zip(row, col_widths):
-                    c.drawCentredString(cx - w / 2, y - row_h + 0.16 * cm, rs(str(val)))
-                    cx -= w
-                c.setStrokeColorRGB(0.85, 0.85, 0.85); c.setLineWidth(0.4)
-                c.line(x_start, y - row_h, x_start + table_w, y - row_h)
-                y -= row_h
-
-            c.setStrokeColorRGB(0.6, 0.6, 0.6); c.setLineWidth(0.8)
-            c.rect(x_start, y, table_w, (len(rows) + 1) * row_h, stroke=1, fill=0)
-            y -= 0.6 * cm
-
-        col_widths = [0.8*cm, 3.2*cm, 2.6*cm, 2.2*cm, 2.6*cm, 2*cm, 4.5*cm]
-        rows = []
+        rows_data = []
         for i, d in enumerate(qs):
-            items_str = ' ، '.join(f"{it.stock.drug.dci_name} ×{it.quantity}" for it in d.items.all())
-            rows.append([
-                i + 1,
-                f"{d.beneficiary.first_name} {d.beneficiary.last_name}",
-                d.doctor_name,
-                d.prescription_number or '—',
-                str(d.distribution_date),
-                'معتمد' if d.is_validated else 'انتظار',
-                items_str[:60],
-            ])
-        draw_table(
-            'سجل عمليات الصرف',
-            ['#', 'المستفيد', 'الطبيب', 'الوصفة', 'التاريخ', 'الحالة', 'الأصناف'],
-            col_widths,
-            rows or [['—'] * 7],
-        )
+            items = list(d.items.all())
+            item_lines = [f"• {it.stock.drug.dci_name} ({it.stock.drug.dosage}) × {it.quantity}" for it in items] or ['—']
+            rows_data.append((
+                [
+                    i + 1,
+                    f"{d.beneficiary.first_name} {d.beneficiary.last_name}",
+                    d.doctor_name,
+                    d.prescription_number or '—',
+                    str(d.distribution_date),
+                    'معتمد' if d.is_validated else 'انتظار',
+                ],
+                item_lines,
+            ))
+
+        c.setFont(arabic_font, 8.5)
+        for ridx, (row_vals, item_lines) in enumerate(rows_data):
+            # Wrap each item line to the items column width, so multiple
+            # donation/distribution items no longer overflow into other rows.
+            wrapped = []
+            for line in item_lines:
+                wrapped.extend(wrap_lines(line, items_col_w, 8.5))
+            row_h = max(line_h + 2 * row_pad, len(wrapped) * line_h + 2 * row_pad)
+
+            if y - row_h < margin + 1 * cm:
+                y = new_page(False)
+                y = ensure_space(y, row_h)
+                c.setFont(arabic_font, 11.5)
+                c.drawRightString(width - margin, y, rs('سجل عمليات الصرف (تابع)'))
+                y -= 0.5 * cm
+                draw_header_row()
+                c.setFont(arabic_font, 8.5)
+
+            if ridx % 2 == 0:
+                c.setFillColorRGB(0.95, 0.97, 0.97)
+                c.rect(x_start, y - row_h, table_w, row_h, stroke=0, fill=1)
+                c.setFillColorRGB(0, 0, 0)
+
+            # Fixed columns vertically centered within the (possibly taller) row
+            cx = width - margin
+            for val, w in zip(row_vals, col_widths[:-1]):
+                c.drawCentredString(cx - w / 2, y - row_h / 2 + line_h / 3, rs(str(val)))
+                cx -= w
+
+            # Items column: right-aligned, one line per item, top-aligned
+            items_x_right = cx - 0.15 * cm
+            line_y = y - row_pad - line_h + 0.12 * cm
+            for line in wrapped:
+                c.drawRightString(items_x_right, line_y, rs(line))
+                line_y -= line_h
+
+            c.setStrokeColorRGB(0.85, 0.85, 0.85)
+            c.setLineWidth(0.4)
+            c.line(x_start, y - row_h, x_start + table_w, y - row_h)
+            # column separators for readability
+            cx = width - margin
+            for w in col_widths[:-1]:
+                cx -= w
+                c.line(cx, y, cx, y - row_h)
+            y -= row_h
+
+        c.setStrokeColorRGB(0.6, 0.6, 0.6)
+        c.setLineWidth(0.8)
+        c.rect(x_start, y, table_w, 0, stroke=0, fill=0)  # no-op, keeps structure symmetric with other reports
 
         draw_footer()
         c.save()
@@ -702,7 +776,6 @@ class DrugDistributionReportView(APIView):
         response = HttpResponse(buffer, content_type='application/pdf')
         response['Content-Disposition'] = 'attachment; filename="distributions_report.pdf"'
         return response
-
 # ─────────────────────────────────────────────
 # DASHBOARD
 # Any authenticated user sees it.
