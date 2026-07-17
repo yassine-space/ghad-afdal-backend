@@ -44,6 +44,7 @@ from .models import (
     Department,
     Activity,
     Member,
+    OfficeMember,
     Drug,
     DrugStock,
     DrugDonation,
@@ -65,6 +66,7 @@ from .serializers import (
     DepartmentSerializer,
     ActivitySerializer,
     MemberSerializer,
+    OfficeMemberSerializer,
     DrugSerializer,
     DrugStockSerializer,
     DrugDonationSerializer,
@@ -190,6 +192,34 @@ class MemberViewSet(viewsets.ModelViewSet):
         if self.request.method in ('GET', 'HEAD', 'OPTIONS'):
             return [IsAuthenticatedAnyActivity()]
         return [IsAdminOnly()]
+
+
+class OfficeMemberViewSet(viewsets.ModelViewSet):
+    """
+    GET              /api/office-members/              → any authenticated user
+    GET              /api/office-members/?mandate=...   → filter by mandate
+    GET              /api/office-members/by-mandate/... → filter by mandate
+    POST/PUT/DELETE   /api/office-members/              → superuser only
+    """
+    serializer_class = OfficeMemberSerializer
+
+    def get_queryset(self):
+        queryset = OfficeMember.objects.select_related('person').all()
+        mandate = self.request.query_params.get('mandate')
+        if mandate:
+            queryset = queryset.filter(mandate__iexact=mandate)
+        return queryset
+
+    def get_permissions(self):
+        if self.request.method in ('GET', 'HEAD', 'OPTIONS'):
+            return [IsAuthenticated()]
+        return [IsAdminOnly()]
+
+    @action(detail=False, methods=['get'], url_path='by-mandate/(?P<mandate>[^/.]+)')
+    def by_mandate(self, request, mandate=None):
+        queryset = self.get_queryset().filter(mandate__iexact=mandate)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
 
 # ─────────────────────────────────────────────

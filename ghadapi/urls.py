@@ -14,6 +14,7 @@ from .views import (
     DepartmentViewSet,
     ActivityViewSet,
     MemberViewSet,
+    OfficeMemberViewSet,
     UserViewSet,
     # Shared
     PersonViewSet,
@@ -50,6 +51,7 @@ router.register(r'persons',       PersonViewSet)
 router.register(r'departments',   DepartmentViewSet)
 router.register(r'activities',    ActivityViewSet)
 router.register(r'members',       MemberViewSet)
+router.register(r'office-members', OfficeMemberViewSet, basename='office-member')
 router.register(r'users',         UserViewSet,             basename='users')
 router.register(r'drugs',         DrugViewSet)
 router.register(r'stocks',        DrugStockViewSet,        basename='drugstock')

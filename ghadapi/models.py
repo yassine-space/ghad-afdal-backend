@@ -149,6 +149,22 @@ class Member(models.Model):
     def __str__(self):
         return f"{self.person} — {self.role} @ {self.department}"
 
+class OfficeMember(models.Model):
+    person  = models.ForeignKey(Person, on_delete=models.CASCADE, related_name='office_memberships')
+    role    = models.CharField(max_length=100)   # رئيس، نائب رئيس، أمين المال، أمين عام...
+    mandate = models.CharField(max_length=100, blank=True)  
+
+    class Meta:
+        ordering = ['mandate', 'person__last_name', 'person__first_name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['person', 'mandate'],
+                name='unique_office_member_per_mandate',
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.person} — {self.role} - {self.mandate}"  
 
 class UserActivityAccess(models.Model):
     """

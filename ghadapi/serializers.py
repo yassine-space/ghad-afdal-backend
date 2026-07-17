@@ -12,6 +12,7 @@ from .models import (
     Department,
     Activity,
     Member,
+    OfficeMember,
     Drug,
     DrugStock,
     DrugDonation,
@@ -105,6 +106,18 @@ class MemberSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Member
         fields = "__all__"
+
+
+class OfficeMemberSerializer(serializers.ModelSerializer):
+    person_name = serializers.SerializerMethodField()
+    person_nin  = serializers.CharField(source='person.nin', read_only=True)
+
+    class Meta:
+        model  = OfficeMember
+        fields = ['id', 'person', 'person_name', 'person_nin', 'role', 'mandate']
+
+    def get_person_name(self, obj):
+        return f"{obj.person.first_name} {obj.person.last_name}"
 
 
 # ─────────────────────────────────────────────
